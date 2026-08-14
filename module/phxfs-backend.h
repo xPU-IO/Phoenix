@@ -4,10 +4,13 @@
 #include <linux/types.h>
 #include <linux/pci.h>
 
+#include "phxfs-mem.h"
+
 /*
  * Compile-time vendor selection.
  * The build system defines exactly one of these via -D flag:
  *   CONFIG_PHXFS_VENDOR_NVIDIA
+ *   CONFIG_PHXFS_VENDOR_METAX
  *   CONFIG_PHXFS_VENDOR_AMD
  *   CONFIG_PHXFS_VENDOR_HUAWEI
  *
@@ -16,6 +19,9 @@
 
 #ifdef CONFIG_PHXFS_VENDOR_NVIDIA
 #define PHXFS_PCI_VENDOR_ID 0x10DE
+#elif defined(CONFIG_PHXFS_VENDOR_METAX)
+#define PHXFS_PCI_VENDOR_ID 0x9999
+#define PCI_CLASS_DISPLAY 0x0380
 #elif defined(CONFIG_PHXFS_VENDOR_AMD)
 #define PHXFS_PCI_VENDOR_ID 0x1002
 #elif defined(CONFIG_PHXFS_VENDOR_HUAWEI)

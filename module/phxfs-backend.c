@@ -28,7 +28,9 @@ int phxfs_p2p_register_backend(struct phxfs_p2p_ops *ops)
  *
  * If no CONFIG_PHXFS_VENDOR_* is defined, default to NVIDIA.
  */
-#if defined(CONFIG_PHXFS_VENDOR_AMD)
+#if defined(CONFIG_PHXFS_VENDOR_METAX)
+extern int metax_backend_register(void);
+#elif defined(CONFIG_PHXFS_VENDOR_AMD)
 extern int amd_backend_register(void);
 #elif defined(CONFIG_PHXFS_VENDOR_HUAWEI)
 extern int huawei_backend_register(void);
@@ -40,7 +42,9 @@ int phxfs_p2p_backend_init(void)
 {
 	int ret;
 
-#if defined(CONFIG_PHXFS_VENDOR_AMD)
+#if defined(CONFIG_PHXFS_VENDOR_METAX)
+	ret = metax_backend_register();
+#elif defined(CONFIG_PHXFS_VENDOR_AMD)
 	ret = amd_backend_register();
 #elif defined(CONFIG_PHXFS_VENDOR_HUAWEI)
 	ret = huawei_backend_register();

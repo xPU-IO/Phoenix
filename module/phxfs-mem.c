@@ -75,8 +75,12 @@ void unmap_and_release(struct p2p_vmap* map)
         map->release(map);
     }
 
-    kfree(map);
-	phxfs_info("unmap_and_release\n");
+	if(map!=NULL)
+    {
+		kfree(map);
+        map = NULL;
+    }
+    phxfs_info("unmap_and_release\n");
 }
 
 
@@ -102,7 +106,10 @@ void release_gpu_memory(struct p2p_vmap* map)
 		kfree(map->pages);
 	}
 	if(map!=NULL)
+    {
 		kfree(map);
+        map = NULL;
+    }
 }
 
 static void force_release_gpu_memory(struct p2p_vmap* map)
@@ -120,7 +127,11 @@ static void force_release_gpu_memory(struct p2p_vmap* map)
 
         if (gd->pt != NULL)
         {
+#ifndef CONFIG_PHXFS_VENDOR_METAX
             phxfs_p2p->put_pages(map->gpuvaddr, gd->pt);
+#else
+            phxfs_p2p->free_page_table(gd->pt);
+#endif
         }
 
         kfree(gd);
@@ -272,7 +283,7 @@ int phxfs_map_dev_addr_inner(phxfs_mmap_buffer_t mbuffer, u64 devaddr, u64 dev_l
         goto out;
     }
     gd->pt = NULL;
-    mbuffer->map->data = (struct gpu_region*)gd;
+    mbuffer->map->data = (void*)gd;
     ret = phxfs_p2p->get_pages(mbuffer->map->gpuvaddr, page_size * mbuffer->map->n_addrs, &gd->pt, 
         (void (*)(void*)) force_release_gpu_memory, mbuffer->map);
     if (ret != 0 || gd->pt == NULL) {
@@ -372,6 +383,7 @@ out:
     }
     if (gd != NULL) {
         kfree(gd);
+        gd = NULL;
         if (mbuffer->map != NULL)
             mbuffer->map->data = NULL;
     }
