@@ -49,6 +49,17 @@ elseif (PHXFS_VENDOR STREQUAL "METAX")
 endif ()
 target_compile_definitions (test_batch PRIVATE TEST_FILE="${TEST_FILE}")
 
+# --- test_stream: stream-ordered async I/O correctness (host-func model) ---
+add_executable (test_stream test_stream.cu)
+add_dependencies (test_stream libphoenix)
+target_include_directories (test_stream PRIVATE "${phoenix_include}")
+if (PHXFS_VENDOR STREQUAL "NVIDIA")
+    target_link_libraries (test_stream libphoenix CUDA::cudart Threads::Threads)
+elseif (PHXFS_VENDOR STREQUAL "METAX")
+    target_link_libraries (test_stream libphoenix Threads::Threads)
+endif ()
+target_compile_definitions (test_stream PRIVATE TEST_FILE="${TEST_FILE}")
+
 # CTest target. `batch_cpu` runs the module-free CPU-buffer correctness (it
 # skips the GPU sections gracefully); point it at a writable scratch path so
 # it works in CI.

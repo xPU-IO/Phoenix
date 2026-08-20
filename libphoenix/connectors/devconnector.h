@@ -74,6 +74,35 @@ struct devconn_ops {
     int   (*queue_sync)(int phxfs_dev, int slot);
 
     /*
+     * Stream-ordered I/O primitives (phx_stream.cpp; all may be NULL — the
+     * core then degrades stream I/O to synchronous semantics automatically).
+     *
+     * Model: the DMA itself is host-driven (io_uring/P2P or pread) and
+     * unknown to CUDA. Instead of bridging its completion into the stream
+     * with events, the DMA runs INSIDE a host callback enqueued on the
+     * user stream:
+     *
+     *   launch_host_func(stream, fn, arg)  ==  cudaLaunchHostFunc
+     *
+     * CUDA guarantees the callback is "called after currently enqueued work
+     * and will block work added after it" — so a READ's consumers and a
+     * WRITE's preceding gather are ordered correctly BY CONSTRUCTION, with
+     * no events, no drain loop, and no submit-vs-consumer race. A bare
+     * cudaStreamSynchronize is always safe for callers.
+     *
+     * launch_host_func: enqueue fn(arg) on `stream` (the user stream).
+     *        The callback MUST NOT make CUDA API calls (CUDA rule); the
+     *        core therefore runs only the pure pread/pwrite leg inside
+     *        it.
+     * stream_sync: block until every op previously enqueued on `stream`
+     *        completed (cudaStreamSynchronize). Used by the degraded
+     *        synchronous write path.
+     */
+    int   (*launch_host_func)(int phxfs_dev, void *stream,
+                              void (*fn)(void *), void *arg);
+    int   (*stream_sync)(int phxfs_dev, void *stream);
+
+    /*
      * Profiler range annotations (NVTX on NVIDIA, vendor equivalents
      * elsewhere). Both may be NULL — the core checks before calling, so a
      * vendor without a profiler API needs no stubs and pays nothing.

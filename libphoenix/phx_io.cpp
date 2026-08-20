@@ -38,12 +38,13 @@ static bool batch_uses_staging(phxfs_io_req_t *reqs, int n) {
 /*
  * Resolve a plain CPU (host) buffer address: buf + buf_offset, with the
  * pointer/length arithmetic checked against address-space overflow. Shared
- * by the single-request read/write path and the batch prepare path so a
- * CPU-buffer (device_id < 0) request is validated identically in both.
- * Returns 0 with *host set, or -EINVAL (and *host left NULL).
+ * by the single-request read/write path, the batch prepare path, and the
+ * stream path (phx_stream.cpp) so a CPU-buffer (device_id < 0) request is
+ * validated identically in all three. Returns 0 with *host set, or -EINVAL
+ * (and *host left NULL).
  */
-static int resolve_cpu_buf(const void *buf, off_t buf_offset, size_t nbyte,
-                           void **host) {
+int resolve_cpu_buf(const void *buf, off_t buf_offset, size_t nbyte,
+                    void **host) {
     *host = NULL;
     if (buf_offset < 0)
         return -EINVAL;
@@ -56,14 +57,18 @@ static int resolve_cpu_buf(const void *buf, off_t buf_offset, size_t nbyte,
 }
 
 /*
- * Shared pread/pwrite loop for the single-request phxfs_read/phxfs_write API.
- * Chunks at PHXFS_IO_CHUNK because a single read()/write() syscall (or
- * io_uring op — same underlying VFS path) transfers at most MAX_RW_COUNT
- * (~2GiB, a Linux kernel constant, not something phxfs controls) per call.
- * Retries EINTR; on a genuine error returns whatever progress was already
- * made instead of discarding it.
+ * Shared pread/pwrite loop for the single-request phxfs_read/phxfs_write
+ * API and the stream path (phx_stream.cpp). Chunks at PHXFS_IO_CHUNK
+ * because a single read()/write() syscall (or io_uring op — same
+ * underlying VFS path) transfers at most MAX_RW_COUNT (~2GiB, a Linux
+ * kernel constant, not something phxfs controls) per call. Retries EINTR;
+ * on a genuine error returns whatever progress was already made instead
+ * of discarding it.
+ *
+ * Pure pread/pwrite — no CUDA API — so it is legal to run inside a
+ * cudaLaunchHostFunc callback.
  */
-static ssize_t xfer(int fd, void *host, ssize_t nbyte, off_t f_offset, bool is_write) {
+ssize_t xfer(int fd, void *host, ssize_t nbyte, off_t f_offset, bool is_write) {
     char *base = (char *)host;
     ssize_t done = 0;
     while (done < nbyte) {

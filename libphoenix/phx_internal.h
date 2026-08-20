@@ -2,8 +2,9 @@
 #define __PHX_INTERNAL_H__
 
 /*
- * Internal header shared by phx_device.cpp / phx_mem.cpp / phx_io.cpp.
- * NOT part of the public API — do not include from outside libphoenix.
+ * Internal header shared by phx_device.cpp / phx_mem.cpp / phx_io.cpp /
+ * phx_stream.cpp. NOT part of the public API — do not include from
+ * outside libphoenix.
  */
 
 #include <pthread.h>
@@ -89,6 +90,18 @@ extern phxfs_mmap_buffer_t mbuffer[PHXFS_MAX_DEVICES];
 /* ---- phx_device.cpp ---- */
 phxfs_mmap_buffer_t *dev_get(int device_id);
 void dev_put(phxfs_mmap_buffer_t *pb);
+
+/* ---- phx_io.cpp ---- */
+/* Shared pread/pwrite loop (chunks at PHXFS_IO_CHUNK, retries EINTR,
+ * keeps partial progress). Used by the single-request path and the
+ * stream path (phx_stream.cpp). Pure host I/O — safe inside a
+ * cudaLaunchHostFunc callback. */
+ssize_t xfer(int fd, void *host, ssize_t nbyte, off_t f_offset,
+             bool is_write);
+/* Validate + resolve a plain CPU buffer address (buf + buf_offset, with
+ * overflow checks). Returns 0 with *host set, or -EINVAL. */
+int resolve_cpu_buf(const void *buf, off_t buf_offset, size_t nbyte,
+                    void **host);
 
 /* ---- phx_mem.cpp ---- */
 void free_phxfs_p2p_map(phxfs_mmap_buffer_t *buffer);
