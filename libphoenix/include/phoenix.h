@@ -220,11 +220,9 @@ const char *phxfs_io_engine_name(void);
  *     through *bytes_done), or a negative errno for submission-level
  *     failures (bad args, callback enqueue failure...).
  *
- * Vendor degradation: if the connector lacks launch_host_func,
- * submissions execute synchronously on the calling thread (read: plain
- * DMA, complete on return; write: stream-sync first when available,
- * then DMA). The API and the *bytes_done contract are unchanged — only
- * the host-async overlap is lost.
+ * Vendor requirement: the connector must provide the launch_host_func
+ * primitive; without it submissions fail with -EOPNOTSUPP. There is no
+ * synchronous fallback.
  * ------------------------------------------------------------------ */
 int phxfs_read_stream(int fd, int device_id, void *buf, size_t *nbytes,
                       off_t *buf_offset, off_t *f_offset,

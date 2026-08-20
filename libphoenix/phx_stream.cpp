@@ -45,9 +45,9 @@
  * staging devices keep using the synchronous phxfs_read / phxfs_write
  * (and the batch API).
  *
- * Degradation: if the connector lacks launch_host_func, submissions run
- * synchronously on the caller thread (write: stream-sync first when
- * available). API and outcome contract are unchanged.
+ * The stream API requires a connector with the launch_host_func
+ * primitive; without it submissions fail with -EOPNOTSUPP (there is no
+ * synchronous fallback).
  */
 
 #include <cerrno>
@@ -126,23 +126,12 @@ static int phxfs_stream_io(int fd, int device_id, void *buf, size_t *nbytes,
         mbuffer[device_id].map_mode == PHX_MAP_MODE_STAGING)
         return -EOPNOTSUPP;
 
+    /* The stream API requires the host-function primitive. */
+    if (!devconn || !devconn->launch_host_func)
+        return -EOPNOTSUPP;
+
     const size_t nb = *nbytes;
     const off_t  bo = *buf_offset, fo = *f_offset;
-
-    /* Degraded mode (connector lacks launch_host_func): run synchronously
-     * through the classic path. Correctness is identical; only the
-     * host-async overlap is lost. */
-    if (!devconn || !devconn->launch_host_func) {
-        if (op == PHXFS_OP_WRITE && devconn && devconn->stream_sync &&
-            devconn->stream_sync(device_id, stream) != 0) {
-            *bytes_done = -EIO;
-            return 0;
-        }
-        *bytes_done = op == PHXFS_OP_WRITE
-            ? phxfs_write(fd, device_id, buf, bo, (ssize_t)nb, fo)
-            : phxfs_read(fd, device_id, buf, bo, (ssize_t)nb, fo);
-        return 0;   /* accepted; outcome in *bytes_done */
-    }
 
     *bytes_done = 0;   /* in-flight marker (written again on completion) */
 

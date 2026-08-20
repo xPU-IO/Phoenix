@@ -297,21 +297,8 @@ static int nvidia_queue_sync(int phxfs_dev, int slot)
 }
 
 /* ------------------------------------------------------------------ */
-/* Stream-ordered I/O primitives (host-function model)                */
+/* Stream-ordered I/O primitive (host-function model)                 */
 /* ------------------------------------------------------------------ */
-
-static int nvidia_stream_sync(int phxfs_dev, void *stream)
-{
-    (void)phxfs_dev;   /* the stream handle carries its own context */
-    if (!stream)
-        return -EINVAL;
-    cudaError_t rc = cudaStreamSynchronize((cudaStream_t)stream);
-    if (rc != cudaSuccess) {
-        fprintf(stderr, "nvidia_stream_sync: %s\n", cudaGetErrorString(rc));
-        return -EIO;
-    }
-    return 0;
-}
 
 /*
  * Enqueue a host callback on the user stream. CUDA guarantees the callback
@@ -382,7 +369,6 @@ static struct devconn_ops nvidia_devconn = {
     .memcpy_dtod_async = nvidia_memcpy_dtod_async,
     .queue_sync   = nvidia_queue_sync,
     .launch_host_func = nvidia_launch_host_func,
-    .stream_sync  = nvidia_stream_sync,
 #ifdef PHX_NVTX
     .range_push   = nvidia_range_push,
     .range_pop    = nvidia_range_pop,

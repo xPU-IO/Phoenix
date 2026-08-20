@@ -74,8 +74,9 @@ struct devconn_ops {
     int   (*queue_sync)(int phxfs_dev, int slot);
 
     /*
-     * Stream-ordered I/O primitives (phx_stream.cpp; all may be NULL — the
-     * core then degrades stream I/O to synchronous semantics automatically).
+     * Stream-ordered I/O primitive (phx_stream.cpp; REQUIRED for the
+     * stream API — phxfs_read_stream / phxfs_write_stream fail with
+     * -EOPNOTSUPP when it is NULL).
      *
      * Model: the DMA itself is host-driven (io_uring/P2P or pread) and
      * unknown to CUDA. Instead of bridging its completion into the stream
@@ -94,13 +95,9 @@ struct devconn_ops {
      *        The callback MUST NOT make CUDA API calls (CUDA rule); the
      *        core therefore runs only the pure pread/pwrite leg inside
      *        it.
-     * stream_sync: block until every op previously enqueued on `stream`
-     *        completed (cudaStreamSynchronize). Used by the degraded
-     *        synchronous write path.
      */
     int   (*launch_host_func)(int phxfs_dev, void *stream,
                               void (*fn)(void *), void *arg);
-    int   (*stream_sync)(int phxfs_dev, void *stream);
 
     /*
      * Profiler range annotations (NVTX on NVIDIA, vendor equivalents
