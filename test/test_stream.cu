@@ -217,7 +217,7 @@ int main(int argc, char **argv) {
         cudaMemset(g_bad, 0, sizeof(unsigned int));
         int submitted = 0;
         for (int i = 0; i < NCHUNK; i++) {
-            int rc = phxfs_read_stream(rfd, dev,
+            int rc = phxfs_read_stream(rfd,
                                        gbuf, &h_nbyte[i], &h_boff[i],
                                        &h_foff[i], &h_bdone[i], s1);
             if (rc != 0) break;
@@ -253,7 +253,7 @@ int main(int argc, char **argv) {
             h_nbyte[i] = CHUNK;
             h_foff[i]  = (off_t)i * CHUNK;
             h_boff[i]  = (off_t)i * CHUNK;
-            if (phxfs_read_stream(rfd, dev,
+            if (phxfs_read_stream(rfd,
                                   gbuf, &h_nbyte[i], &h_boff[i], &h_foff[i],
                                   &h_bdone[i], s1) == 0)
                 submitted++;
@@ -283,7 +283,7 @@ int main(int argc, char **argv) {
                 gbuf + (size_t)i * CHUNK / 8, (uint64_t)i * CHUNK, CHUNK / 8);
         int submitted = 0;
         for (int i = 0; i < NCHUNK; i++) {
-            if (phxfs_write_stream(wfd, dev, gbuf, &h_nbyte[i], &h_boff[i],
+            if (phxfs_write_stream(wfd, gbuf, &h_nbyte[i], &h_boff[i],
                                    &h_foff[i], &h_bdone[i], s1) == 0)
                 submitted++;
         }
@@ -304,7 +304,7 @@ int main(int argc, char **argv) {
     {
         size_t n = CHUNK; off_t f = 0, b = 0; ssize_t bd = 0;
         int badfd = open("/nonexistent-phx-test", O_RDONLY);
-        int rc = phxfs_read_stream(badfd, dev, gbuf, &n, &b, &f, &bd, s1);
+        int rc = phxfs_read_stream(badfd, gbuf, &n, &b, &f, &bd, s1);
         CHECK(rc == 0 || rc < 0, "T4 submission returned (%d)", rc);
         if (rc == 0) {
             // Accepted: callback ran the DMA; it must have failed and the
@@ -331,7 +331,7 @@ int main(int argc, char **argv) {
             ((uint64_t *)tmp)[j] = pattern_word(j * 8);
         pwrite(fd, tmp, 2 * CHUNK, 0); close(fd); free(tmp);
 
-        CHECK(phxfs_read_stream(rfd, /*device_id=*/-1, cpu_buf,
+        CHECK(phxfs_read_stream(rfd, cpu_buf,
                                 &n, &b, &f, &bd, s1) == 0,
               "T5 CPU-buffer read submitted");
         CHECK(cudaStreamSynchronize(s1) == cudaSuccess, "T5 sync clean");
@@ -349,9 +349,9 @@ int main(int argc, char **argv) {
         size_t n1 = CHUNK, n2 = CHUNK;
         off_t f1 = 0, f2 = CHUNK, b1 = 0, b2 = 2 * CHUNK;
         ssize_t bd1 = 0, bd2 = 0;
-        int r1 = phxfs_read_stream(rfd, dev,
+        int r1 = phxfs_read_stream(rfd,
                                    gbuf, &n1, &b1, &f1, &bd1, s1);
-        int r2 = phxfs_read_stream(rfd, dev,
+        int r2 = phxfs_read_stream(rfd,
                                    gbuf, &n2, &b2, &f2, &bd2, s2);
         CHECK(r1 == 0 && r2 == 0, "T6 both streams submitted");
         verify_words<<<(CHUNK / 8) / 256, 256, 0, s1>>>(

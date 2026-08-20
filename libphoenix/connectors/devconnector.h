@@ -96,7 +96,7 @@ struct devconn_ops {
      *        core therefore runs only the pure pread/pwrite leg inside
      *        it.
      */
-    int   (*launch_host_func)(int phxfs_dev, void *stream,
+    int   (*launch_host_func)(void *stream,
                               void (*fn)(void *), void *arg);
 
     /*

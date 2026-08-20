@@ -213,9 +213,12 @@ const char *phxfs_io_engine_name(void);
  *     a deregistration racing an in-flight DMA is a caller error.
  *     Synchronize the stream before deregistering (the same rule
  *     cuFileReadAsync / cuFileWriteAsync users follow).
- *   - device_id selects the buffer exactly like phxfs_read/write
- *     (>= 0: phxfs device the buf is registered on; < 0: plain CPU
- *     buffer).
+ *   - the buffer device is resolved from the buffer itself, like
+ *     cuFileReadAsync: a buf inside any opened device's registration
+ *     table is a GPU buffer (DMA against its P2P host address; a
+ *     staging-mode device fails with -EOPNOTSUPP); a buf inside no
+ *     registration is a plain CPU address. An extent sticking out of
+ *     its registration fails with -EFAULT.
  *   - returns 0 if the submission was accepted (I/O outcome is reported
  *     through *bytes_done), or a negative errno for submission-level
  *     failures (bad args, callback enqueue failure...).
@@ -224,10 +227,10 @@ const char *phxfs_io_engine_name(void);
  * primitive; without it submissions fail with -EOPNOTSUPP. There is no
  * synchronous fallback.
  * ------------------------------------------------------------------ */
-int phxfs_read_stream(int fd, int device_id, void *buf, size_t *nbytes,
+int phxfs_read_stream(int fd, void *buf, size_t *nbytes,
                       off_t *buf_offset, off_t *f_offset,
                       ssize_t *bytes_done, void *stream);
-int phxfs_write_stream(int fd, int device_id, void *buf, size_t *nbytes,
+int phxfs_write_stream(int fd, void *buf, size_t *nbytes,
                        off_t *buf_offset, off_t *f_offset,
                        ssize_t *bytes_done, void *stream);
 

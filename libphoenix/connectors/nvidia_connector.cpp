@@ -309,10 +309,9 @@ static int nvidia_queue_sync(int phxfs_dev, int slot)
  * functions"). The callback itself must not make CUDA API calls; the core
  * only runs pure-host I/O inside it.
  */
-static int nvidia_launch_host_func(int phxfs_dev, void *stream,
+static int nvidia_launch_host_func(void *stream,
                                    void (*fn)(void *), void *arg)
 {
-    (void)phxfs_dev;   /* the stream handle carries its own context */
     if (!stream || !fn)
         return -EINVAL;
     cudaError_t rc = cudaLaunchHostFunc((cudaStream_t)stream,
