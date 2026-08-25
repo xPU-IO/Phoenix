@@ -45,6 +45,12 @@ LIBPHOENIX_LIB = Path("/usr/local/lib")
 # CUDA
 cuda_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
 
+# liburing is only linked when present — libphoenix builds without it fall
+# back to the sync I/O engine, and phxloader itself never calls liburing.
+_link_libraries = ["phoenix", "cuda", "cudart"]
+if find_library("uring"):
+    _link_libraries.append("uring")
+
 ext_modules = [
     Pybind11Extension(
         "phxloader._phxloader",
@@ -62,9 +68,13 @@ ext_modules = [
             os.path.join(cuda_home, "lib64"),
             os.path.join(cuda_home, "lib"),
         ],
-        libraries=["phoenix", "uring", "cuda", "cudart"],
+        libraries=_link_libraries,
         extra_compile_args=["-std=c++17", "-O2", "-fPIC"],
-        extra_link_args=["-std=c++17"],
+        extra_link_args=[
+            "-std=c++17",
+            f"-Wl,-rpath,{os.path.join(cuda_home, 'lib64')}",
+            f"-Wl,-rpath,{LIBPHOENIX_LIB}",
+        ],
     ),
 ]
 
