@@ -10,6 +10,30 @@
 Phoenix is self-contained: it does **not** require GPUDirect Storage (`nvidia-fs`), a specific
 filesystem, or any RDMA stack. It issues `O_DIRECT` I/O on whatever fd the application opens.
 
+### Supported accelerators
+
+Phoenix currently builds against the **NVIDIA** vendor backend. The same connector
+(`libphoenix/connectors/nvidia_connector.cpp`) is reused on **MetaX (沐曦)** GPUs, because
+MetaX's MACA SDK ships a CUDA-compatible runtime — `cudaMalloc`, `cudaMemcpyAsync`,
+`cudaLaunchHostFunc`, BDF queries via `cudaDeviceGetPCIBusId`, etc. all work as-is, so
+the connector needs no MetaX-specific code path.
+
+To run on a MetaX card:
+
+1. Install the MACA driver and MACA SDK from
+   <https://developer.metax-tech.com/softnova> (download the **Driver** and **SDK** packages).
+2. Set the environment before building / running:
+   ```shell
+   export MACA_PATH=/opt/maca
+   export LD_LIBRARY_PATH=/opt/maca/lib:$LD_LIBRARY_PATH
+   ```
+3. Build Phoenix with the default `NVIDIA` vendor (no `-DPHXFS_VENDOR` change needed):
+   ```shell
+   mkdir -p build && cd build && cmake ../ && make -j
+   ```
+
+The rest of the install steps (kernel module load, tests) are unchanged.
+
 ## 1. Storage backend
 
 Phoenix is storage-agnostic — it works on any storage device / filesystem that supports

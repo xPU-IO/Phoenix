@@ -4,6 +4,16 @@
  * All NVIDIA/CUDA specific code in the user library lives here.
  * Core libphoenix (phoenix.cpp) never includes CUDA headers or calls
  * CUDA APIs directly.
+ *
+ * Note: MetaX (沐曦) GPUs also reuse this connector. MetaX's MACA SDK ships
+ * a CUDA-compatible runtime (cudaMalloc, cudaMemcpyAsync, cudaLaunchHostFunc,
+ * BDF queries via cudaDeviceGetPCIBusId, ... all work), so the NVIDIA
+ * connector handles MetaX hardware without any MetaX-specific code path.
+ * To run on MetaX, install the MACA driver + MACA SDK and set:
+ *     export MACA_PATH=/opt/maca
+ *     export LD_LIBRARY_PATH=/opt/maca/lib:$LD_LIBRARY_PATH
+ * — see doc/install.md for the full setup. No cmake flag change is required
+ * (PHXFS_VENDOR stays NVIDIA).
  */
 
 #include <cuda.h>
