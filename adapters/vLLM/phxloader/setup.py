@@ -42,12 +42,17 @@ def find_library(name, search_paths=None):
 LIBPHOENIX_INCLUDE = Path("/usr/local/include")
 LIBPHOENIX_LIB = Path("/usr/local/lib")
 
-# CUDA
-cuda_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
+phxfs_vendor = os.environ.get("PHXFS_VENDOR", "NVIDIA")
+
+if phxfs_vendor == "NVIDIA":
+    sdk_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
+    _link_libraries = ["phoenix", "cuda", "cudart"]
+elif phxfs_vendor == "METAX":
+    sdk_home = os.environ.get("MACA_HOME", "/opt/maca")
+    _link_libraries = ["phoenix", "mcruntime"]
 
 # liburing is only linked when present — libphoenix builds without it fall
 # back to the sync I/O engine, and phxloader itself never calls liburing.
-_link_libraries = ["phoenix", "cuda", "cudart"]
 if find_library("uring"):
     _link_libraries.append("uring")
 
@@ -61,18 +66,18 @@ ext_modules = [
         include_dirs=[
             str(LIBPHOENIX_INCLUDE),
             str(Path(__file__).resolve().parent / "src"),
-            os.path.join(cuda_home, "include"),
+            os.path.join(sdk_home, "include"),
         ],
         library_dirs=[
             str(LIBPHOENIX_LIB),
-            os.path.join(cuda_home, "lib64"),
-            os.path.join(cuda_home, "lib"),
+            os.path.join(sdk_home, "lib64"),
+            os.path.join(sdk_home, "lib"),
         ],
         libraries=_link_libraries,
         extra_compile_args=["-std=c++17", "-O2", "-fPIC"],
         extra_link_args=[
             "-std=c++17",
-            f"-Wl,-rpath,{os.path.join(cuda_home, 'lib64')}",
+            f"-Wl,-rpath,{os.path.join(sdk_home, 'lib64')}",
             f"-Wl,-rpath,{LIBPHOENIX_LIB}",
         ],
     ),

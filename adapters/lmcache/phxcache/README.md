@@ -2,6 +2,8 @@
 
 This directory hosts the Phoenix adapter for [lmcache](https://github.com/LMCache/LMCache), enabling KV-cache offload/loading acceleration via direct storage→GPU DMA.
 
+Environment variable `PHXFS_VENDOR` should be set as NVIDIA (default) or METAX ... for specific xPU vendor backend.
+
 **Status: planned — not yet implemented.** See [docs/phoenix_lmcache_adapter_plan.md](../../../docs/phoenix_lmcache_adapter_plan.md) for the full design.
 
 ## Design: Asymmetric Phoenix GDS

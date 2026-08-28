@@ -12,8 +12,8 @@
  * To run on MetaX, install the MACA driver + MACA SDK and set:
  *     export MACA_PATH=/opt/maca
  *     export LD_LIBRARY_PATH=/opt/maca/lib:$LD_LIBRARY_PATH
- * — see doc/install.md for the full setup. No cmake flag change is required
- * (PHXFS_VENDOR stays NVIDIA).
+ * — see doc/install.md for the full setup. Only cmake flag change is required
+ * (-DPHXFS_VENDOR=METAX).
  */
 
 #include <cuda.h>

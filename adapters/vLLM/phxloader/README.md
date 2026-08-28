@@ -2,6 +2,8 @@
 
 正式发行包，提供基于 Phoenix GDS（GPU Direct Storage）的 safetensors 权重高速加载能力，通过 DMA 直接从 NVMe 存储传输到 GPU 显存，绕过 CPU 内存中转。
 
+基于特定xPU厂商后端，环境变量`PHXFS_VENDOR`应设置为NVIDIA（默认值）或METAX...
+
 **当前版本：V2.2**
 
 ## 版本演进
