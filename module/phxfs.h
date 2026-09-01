@@ -56,7 +56,11 @@ extern int phxfs_debug;
  * remap exactly the pool's span -- nothing more.
  */
 #define PHXFS_REMAP_ALIGN      ((u64)PAGES_PER_SUBSECTION << PAGE_SHIFT)
+#ifndef CONFIG_PHXFS_VENDOR_METAX
 #define PHXFS_RESERVED_SIZE    ((u64)128 * 1024 * 1024)  /* 128 MiB reserved at head/tail */
+#else
+#define PHXFS_RESERVED_SIZE    0
+#endif
 
 /*
  * BAR mapping mode (module param phxfs_map_mode).
