@@ -870,15 +870,17 @@ static int phxfs_ctrl_init(struct phxfs_ctrl *dev_ctrl, u32 dev_num) {
 	int i, j, ret;
 	u64 size;
 	u16 bus, fn;
+	int domain;
 
 	if (!dev_ctrl)
 		return -EINVAL;
 
 	dev_ctrl->dev_num = dev_num;
 	for (i = 0; i < dev_ctrl->dev_num; i++) {
+		domain = (int)(gpu_info_table[i] >> 32);
 		bus = (gpu_info_table[i] >> 8) & 0xFF;
 		fn = gpu_info_table[i] & 0xFF;
-		dev_ctrl->phx_dev[i].dev = pci_get_domain_bus_and_slot(0, bus, fn);
+		dev_ctrl->phx_dev[i].dev = pci_get_domain_bus_and_slot(domain, bus, fn);
 		if (dev_ctrl->phx_dev[i].dev == NULL) {
 			phxfs_warn("npu%u: pci_get_domain_bus_and_slot failed\n", i);
 			return -1;
