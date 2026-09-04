@@ -35,7 +35,6 @@ set (CMAKE_CXX_STANDARD 20)
 set (CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package (Threads REQUIRED)
-find_library (DL_LIB dl REQUIRED)
 
 # CUDA is only required for NVIDIA vendor
 if (PHXFS_VENDOR STREQUAL "NVIDIA")
@@ -122,12 +121,14 @@ if (PHXFS_VENDOR STREQUAL "NVIDIA")
 endif ()
 
 # Set vendor-specific backend object file and compile define
+set (VENDOR_KERNEL_MODULE "")
 if (PHXFS_VENDOR STREQUAL "NVIDIA")
     set (VENDOR_BACKEND "nvidia-backend.o")
     set (VENDOR_DEFINE "CONFIG_PHXFS_VENDOR_NVIDIA")
 elseif (PHXFS_VENDOR STREQUAL "METAX")
     set (VENDOR_BACKEND "metax-backend.o")
     set (VENDOR_DEFINE "CONFIG_PHXFS_VENDOR_METAX")
+    set (VENDOR_KERNEL_MODULE "/opt/mxdriver/kernel_module/${CMAKE_SYSTEM_VERSION}/Module.symvers")
 elseif (PHXFS_VENDOR STREQUAL "AMD")
     set (VENDOR_BACKEND "amd-backend.o")
     set (VENDOR_DEFINE "CONFIG_PHXFS_VENDOR_AMD")
@@ -257,7 +258,7 @@ target_include_directories(libphoenix PRIVATE "${libphoenix_root}")
 # The library itself depends on cudart (nvidia_connector) and pthreads (io
 # pool); declare them as link deps so libphoenix.so carries the right
 # DT_NEEDED and can be dlopen()'d standalone (P1-2), not left to consumers.
-target_link_libraries(libphoenix Threads::Threads)
+target_link_libraries(libphoenix Threads::Threads ${CMAKE_DL_LIBS})
 if (PHXFS_VENDOR STREQUAL "NVIDIA")
     target_link_libraries(libphoenix CUDA::cudart)
     # NVTX ranges (phx.batch.*, phx.staging.*) for nsys. NVTX v3 is

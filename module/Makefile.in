@@ -10,7 +10,7 @@ KERNEL_SRC := /lib/modules/$(KVER)/build
 all: phxfs
 
 phxfs: configure
-	$(MAKE) -C $(KERNEL_SRC) M=@module_output@ modules
+	$(MAKE) -C $(KERNEL_SRC) M=@module_output@ modules KBUILD_EXTRA_SYMBOLS=@VENDOR_KERNEL_MODULE@
 configure:
 	@ @module_root@/configure $(KVER) @module_root@
 # Optional MAP_MODE=0|1 overrides the baked-in default BAR map mode for this load
