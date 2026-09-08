@@ -5,10 +5,6 @@ if (PHXFS_VENDOR STREQUAL "NVIDIA")
     find_package (CUDA 12.4 REQUIRED)
 endif ()
 
-if (PHXFS_MAP_MODE STREQUAL "staging")
-	set (PHXFS_MAP_MODE_STAGING ON)
-endif ()
-
 set (phoenix_root "${PROJECT_SOURCE_DIR}/..")
 set (phoenix_include "${phoenix_root}/libphoenix/include")
 
