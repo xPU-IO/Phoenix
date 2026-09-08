@@ -173,11 +173,11 @@ static void test_dereg_unregistered(int dev_id) {
 
     // Deregister without registering first
     int ret = phxfs_deregmem(dev_id, gpu_buf, size);
-#ifndef PHXFS_MAP_MODE_STAGING
-      CHECK(ret != 0, "deregmem of unregistered memory correctly fails");
-#else
-      CHECK(ret == 0, "deregmem of unregistered memory correctly succeeds");
-#endif
+    if (phxfs_get_map_mode(dev_id) == 0)
+        CHECK(ret != 0, "deregmem of unregistered memory correctly fails");
+    else
+        CHECK(ret == 0, "deregmem of unregistered memory correctly succeeds");
+
     cudaFree(gpu_buf);
 }
 
