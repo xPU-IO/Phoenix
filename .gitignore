@@ -18,3 +18,4 @@ temp/
 !.codebuddy/skills/
 !.codebuddy/skills/**
 *.pyc
+adapters/mooncake/

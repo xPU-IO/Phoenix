@@ -3,12 +3,28 @@
 ## Prerequisites
 
 - **OS**: Linux x86_64
-- **Kernel**: a kernel source / module tree matching your running kernel (to build `phxfs`)
+- **Kernel**: a kernel source / module tree matching your running kernel (to build `phxfs`);
 - **Accelerator runtime**: a vendor runtime supported by Phoenix (see
   [Supported accelerators](#supported-accelerators) below). Phoenix does **not** require any
   vendor-specific direct-storage plugin (e.g. NVIDIA `nvidia-fs` / GPUDirect Storage), a specific
   filesystem, or any RDMA stack.
 - **Build tools**: CMake ≥ 3.18, the compiler toolchain for your chosen vendor, `liburing`
+
+### Kernel boot parameters
+
+The host must boot with the kernel command-line parameters below — the same requirements as
+NVIDIA GDS. The IOMMU parameters all serve one contract: P2P DMA assumes `phys == bus address`
+(see [vendor-porting-guide.md §2](vendor-porting-guide.md)), i.e. an identity-mapped or disabled
+IOMMU. Missing parameters can make the module fail to load or the DMA path misbehave, and the
+failure shows up in `dmesg` as a low-level remap / DMA error that is hard to trace back to boot
+parameters. Configure them before deployment.
+
+| Parameter | Required on | Reason |
+| --- | --- | --- |
+| `iommu=pt` | Intel CPUs (or disable VT-d in BIOS) | Puts the Intel IOMMU into passthrough (identity) mode, so `phys == bus address` |
+| `amd_iommu=off` | AMD CPUs, e.g. EPYC (or disable AMD-Vi in BIOS) | Unlike Intel, the AMD IOMMU is enabled by default, and `iommu=pt` is not reliably honored by `amd_iommu` — disable the IOMMU entirely, as GDS recommends for AMD platforms |
+| `nokaslr` | Kernel ≥ 6.8 | KASLR conflicts with the ZONE_DEVICE BAR remap in `phxfs` (`devm_memremap_pages` builds struct pages over the GPU BAR); kernel address randomization must be disabled |
+
 
 Phoenix is self-contained: it works at the VFS / block layer and only needs a valid `fd`. It
 issues `O_DIRECT` I/O on whatever fd the application opens — local ext4 / xfs or a parallel

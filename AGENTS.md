@@ -15,7 +15,7 @@ Phoenix is middleware for **direct I/O from storage to xPU (GPU/NPU)** via DMA, 
 | `adapters/vLLM/phxloader/` | vLLM weight loader (safetensors → GPU DMA) via pybind11, published `phxloader` pkg |
 | `adapters/lmcache/` | (roadmap) KV-cache acceleration |
 | `test/` | Correctness + performance tests (`test_regmem`, `test_io`, `test_batch`) |
-| `doc/` | All documentation (index: `doc/README.md`) |
+| `doc/` | All documentation (index: the Documentation table in `README.md`) |
 
 ## Build / test / install (reference environment)
 

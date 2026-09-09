@@ -5,6 +5,9 @@
 Phoenix is a rebuilt version of GPU Direct Storage (GDS) that lets data flow straight from storage into GPU/NPU memory — faster, and easier to deploy than existing GDS. AI applications plug in through simple adapters.
 
 > 📄 Built on the SC'25 paper *"Phoenix: A Refactored I/O Stack for GPU Direct Storage without Phony Buffers"*. Phoenix is now a long-term open-source middleware for storage→xPU I/O, with adapters for AI data (vLLM done; lmcache planned).
+
+> 🚀 **To build and run Phoenix, see [doc/install.md](doc/install.md).**
+
 ## 📰 News
 
 - **2026.8.27** — [LMCache Phoenix backend released and merged into upstream](https://github.com/LMCache/LMCache/pull/4673),
