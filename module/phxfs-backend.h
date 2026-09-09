@@ -24,6 +24,9 @@
 #define PCI_CLASS_DISPLAY 0x0380
 #elif defined(CONFIG_PHXFS_VENDOR_AMD)
 #define PHXFS_PCI_VENDOR_ID 0x1002
+/* MI300/MI308X accelerators expose themselves as "Processing accelerators"
+ * (class 0x1200), not as display controllers — see phxfs_discover_devices(). */
+#define PHXFS_PCI_ACCEL_CLASS 0x1200
 #elif defined(CONFIG_PHXFS_VENDOR_HUAWEI)
 #define PHXFS_PCI_VENDOR_ID 0x19E5
 #else

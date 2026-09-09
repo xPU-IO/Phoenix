@@ -246,7 +246,7 @@ endif ()
 if (PHXFS_VENDOR STREQUAL "NVIDIA" OR PHXFS_VENDOR STREQUAL "METAX")
     set(devconn_source "${libphoenix_root}/connectors/nvidia_connector.cpp")
 elseif (PHXFS_VENDOR STREQUAL "AMD")
-    set(devconn_source "${libphoenix_root}/connectors/amd_connector.cc")
+    set(devconn_source "${libphoenix_root}/connectors/amd_connector.cpp")
 elseif (PHXFS_VENDOR STREQUAL "HUAWEI")
     set(devconn_source "${libphoenix_root}/connectors/huawei_connector.cc")
 endif ()
@@ -267,6 +267,14 @@ if (PHXFS_VENDOR STREQUAL "NVIDIA")
     if (phx_nvtx)
         target_compile_definitions(libphoenix PRIVATE PHX_NVTX=1)
     endif ()
+elseif (PHXFS_VENDOR STREQUAL "AMD")
+    # HIP runtime: the connector only uses the plain C HIP API, so it is
+    # compiled by the regular CXX compiler — no hipcc needed for the
+    # library itself (only the tests need hipcc for their .hip sources).
+    set (HIP_PATH "/opt/rocm" CACHE PATH "ROCm installation prefix")
+    target_include_directories (libphoenix PRIVATE "${HIP_PATH}/include")
+    target_link_directories (libphoenix PRIVATE "${HIP_PATH}/lib")
+    target_link_libraries (libphoenix amdhip64)
 endif ()
 
 # Link liburing for the io_uring batch engine when available.
@@ -298,9 +306,11 @@ set (CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set (CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set (CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
-# Tests require CUDA (they use .cu files)
+# Tests require a GPU language (CUDA on NVIDIA/METAX via cu-bridge, HIP on
+# AMD from the hipify-perl-converted test/*.hip sources)
 enable_testing ()
-if (PHXFS_VENDOR STREQUAL "NVIDIA" OR PHXFS_VENDOR STREQUAL "METAX")
+if (PHXFS_VENDOR STREQUAL "NVIDIA" OR PHXFS_VENDOR STREQUAL "METAX"
+        OR PHXFS_VENDOR STREQUAL "AMD")
     add_subdirectory ("${PROJECT_SOURCE_DIR}/test/")
 endif ()
 

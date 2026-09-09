@@ -1013,6 +1013,24 @@ static ssize_t map_mode_show(struct device *cdev_device,
 }
 static DEVICE_ATTR_RO(map_mode);
 
+/*
+ * Read-only sysfs handle exposing the active backend's device page size,
+ * so libphoenix connectors can pick it up dynamically (each vendor reports
+ * its own granularity — AMD is queried from the driver at module init, it
+ * is NOT the NVIDIA 64KiB) via the same
+ * /sys/class/phxfs-generic/phxfs_devN/ path used for pci_bdf/map_mode.
+ */
+static ssize_t page_size_show(struct device *cdev_device,
+                              struct device_attribute *attr, char *buf) {
+	if (WARN_ON(!buf))
+		return -EINVAL;
+	if (!phxfs_p2p)
+		return -ENODEV;
+	return sprintf(buf, "%llu\n",
+		       (unsigned long long)phxfs_p2p->page_size);
+}
+static DEVICE_ATTR_RO(page_size);
+
 void phxfs_cdev_del(struct cdev *cdev, struct device *cdev_device,
                     struct phxfs_dev *dev) {
 	if (WARN_ON(!cdev || !cdev_device || !dev))
@@ -1020,6 +1038,7 @@ void phxfs_cdev_del(struct cdev *cdev, struct device *cdev_device,
 
 	device_remove_file(cdev_device, &dev_attr_pci_bdf);
 	device_remove_file(cdev_device, &dev_attr_map_mode);
+	device_remove_file(cdev_device, &dev_attr_page_size);
 	cdev_device_del(cdev, cdev_device);
 	/* No release worker may run past this point: it touches dev->segments. */
 	phxfs_staging_release_cancel(dev);
@@ -1089,6 +1108,14 @@ int phxfs_cdev_add(struct cdev *cdev, struct device *cdev_device,
 		device_remove_file(cdev_device, &dev_attr_pci_bdf);
 		cdev_device_del(cdev, cdev_device);
 		ida_simple_remove(&phxfs_chr_minor_ida, dev->idx);
+		return ret;
+	}
+	ret = device_create_file(cdev_device, &dev_attr_page_size);
+	if (ret) {
+		device_remove_file(cdev_device, &dev_attr_map_mode);
+		device_remove_file(cdev_device, &dev_attr_pci_bdf);
+		cdev_device_del(cdev, cdev_device);
+		ida_simple_remove(&phxfs_chr_minor_ida, dev->idx);
 	}
 	return ret;
 }
@@ -1139,6 +1166,30 @@ static void phxfs_discover_devices(void)
 	memset(gpu_info_table, 0, sizeof(gpu_info_table));
 	npu_num = 0;
 #ifndef CONFIG_PHXFS_VENDOR_METAX
+#ifdef PHXFS_PCI_ACCEL_CLASS
+	/* Scan processing accelerators (AMD MI300/MI308X are class 0x1200,
+	 * not display controllers — the scans below would miss them). */
+	while ((pdev = pci_get_class(PHXFS_PCI_ACCEL_CLASS << 8, pdev)) != NULL) {
+		if (pdev->vendor != PHXFS_PCI_VENDOR_ID || !pdev->bus)
+			continue;
+		if (phxfs_numa_node >= 0 &&
+		    pcibus_to_node(pdev->bus) != phxfs_numa_node) {
+			phxfs_info("phxfs: skip GPU %04x:%02x:%02x.%d (numa mismatch)\n",
+				   pci_domain_nr(pdev->bus), pdev->bus->number,
+				   PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
+			continue;
+		}
+		if (npu_num >= MAX_GPU_DEVS)
+			break;
+		gpu_info_table[npu_num] =
+			((uint64_t)pci_domain_nr(pdev->bus) << 32) |
+			PCI_DEVID(pdev->bus->number, pdev->devfn);
+		phxfs_info("phxfs: found GPU %04x:%02x:%02x.%d (index=%u)\n",
+			   pci_domain_nr(pdev->bus), pdev->bus->number,
+			   PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn), npu_num);
+		npu_num++;
+	}
+#endif
 	/* Scan 3D display controllers */
 	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_3D << 8, pdev)) != NULL) {
 		if (pdev->vendor != PHXFS_PCI_VENDOR_ID || !pdev->bus)

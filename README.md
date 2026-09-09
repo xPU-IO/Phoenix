@@ -10,6 +10,7 @@ Phoenix is a rebuilt version of GPU Direct Storage (GDS) that lets data flow str
 
 ## 📰 News
 
+- **2026.9.9** — AMD (MI300 series) support: new `amd` P2P backend (amdkfd peer-direct) and HIP connector, validated on 8× Instinct MI308X — see [doc/amd-porting-plan.md](doc/amd-porting-plan.md).
 - **2026.8.27** — [LMCache Phoenix backend released and merged into upstream](https://github.com/LMCache/LMCache/pull/4673),
 - **2026.8.20 Stream-Ordered I/O** - Phoenix now supports stream-ordered asynchronous I/O. The new `phxfs_read_stream` / `phxfs_write_stream` APIs take the stream with each submission, no registration required. Since the DMA is host-driven and invisible to the accelerator runtime, the transfer runs inside a host callback enqueued on the stream via the vendor connector's `launch_host_func` primitive — stream semantics then order read consumers and write gathers by construction, a bare stream synchronize is always sufficient.
 - **2026.8.6 staging buffer mode** — new `phxfs_map_mode=1` remaps only the BAR units each registered buffer touches (on demand, refcounted, released when idle) instead of the whole GPU BAR, so the rest of the BAR stays `pfn_valid=false` and GPUDirect RDMA / peer-memory (`ibv_reg_mr`) can coexist with Phoenix on the same GPU — the full-BAR mapping previously made peer MMIO unmappable by `dma_map_resource`.

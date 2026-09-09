@@ -10,6 +10,7 @@ motivation/breakdown
 tools/ccan
 scripts/results*
 build/
+build-amd/
 *.so
 *.egg-info/
 temp/
