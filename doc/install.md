@@ -125,6 +125,8 @@ This installs (copies) the kernel module; it does **not** load it. If the module
 (e.g. the running kernel has no writable module tree), `make install` prints the reason and
 still installs the library.
 
+It also refreshes the root-only PAT memtype snapshot at `/run/phxfs/pat_memtype_list` when debugfs is available.
+
 ### Load the kernel module
 
 Load the vendor accelerator driver first (e.g. `nvidia-smi` on NVIDIA, or the equivalent
@@ -134,6 +136,11 @@ command from your vendor's runtime), then:
 cd build
 sudo make insmod          # loads phoenixfs.ko with the build's default mode (STAGING)
 ```
+
+All `make insmod*` targets refresh `/run/phxfs/pat_memtype_list` immediately before loading.
+A direct module load without that snapshot remains fail-open and logs a warning directing the
+user to reload through `make insmod*`. If debugfs is unavailable during refresh, any stale
+snapshot is removed.
 
 If installation fails, see [troubleshooting.md](troubleshooting.md).
 

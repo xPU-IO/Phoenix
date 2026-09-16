@@ -67,11 +67,12 @@ MODULE_PARM_DESC(phxfs_staging_release,
 	"Staging mode: unmap a BAR unit once no registration references it "
 	"(1=on [default], 0=keep every unit mapped until module unload)");
 
-#define PHXFS_PAT_PATH "/sys/kernel/debug/x86/pat_memtype_list"
+/* Refreshed from debugfs by the install/insmod Make targets in user space. */
+#define PHXFS_PAT_PATH "/run/phxfs/pat_memtype_list"
 #define PHXFS_PAT_BUF_SIZE (64 * 1024) /* PAT file typically < 16 KiB */
 
 /*
- * Read PAT memtype list and extract conflict ranges that overlap
+ * Read the PAT memtype snapshot and extract conflict ranges that overlap
  * with [bar_start, bar_start + bar_len).
  * Returns number of conflicts found, or negative errno.
  * conflicts array is allocated by caller with max_entries capacity.
@@ -92,7 +93,8 @@ int phxfs_read_pat_conflicts(u64 bar_start, u64 bar_len,
 
 	filp = filp_open(PHXFS_PAT_PATH, O_RDONLY, 0);
 	if (IS_ERR(filp)) {
-		phxfs_warn("phxfs: cannot open %s (err=%ld), "
+		phxfs_warn("phxfs: cannot open PAT snapshot %s (err=%ld); "
+		       "load the module with 'make insmod' to generate it; "
 		       "skipping PAT conflict detection\n",
 		       PHXFS_PAT_PATH, PTR_ERR(filp));
 		kfree(buf);

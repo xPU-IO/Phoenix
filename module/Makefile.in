@@ -6,6 +6,10 @@ ccflags-y += @module_ccflags@
 
 phoenixfs-objs := phxfs-mem.o phxfs-backend.o @VENDOR_BACKEND@ phxfs.o phxfs-p2p-service.o phxfs-p2pdma.o
 KERNEL_SRC := /lib/modules/$(KVER)/build
+PAT_MEMTYPE_SOURCE := /sys/kernel/debug/x86/pat_memtype_list
+PAT_MEMTYPE_SNAPSHOT := /run/phxfs/pat_memtype_list
+
+.PHONY: all phxfs configure refresh-pat-snapshot insmod insmod-staging insmod-full rmmod install clean
 
 all: phxfs
 
@@ -13,19 +17,47 @@ phxfs: configure
 	$(MAKE) -C $(KERNEL_SRC) M=@module_output@ modules KBUILD_EXTRA_SYMBOLS=@VENDOR_KERNEL_MODULE@
 configure:
 	@ @module_root@/configure $(KVER) @module_root@
+
+# kernel_read() cannot consume the legacy debugfs .read implementation on
+# modern kernels. Snapshot it from user space into a regular tmpfs file first.
+# A failed refresh removes any stale snapshot but remains fail-open, matching
+# the module's existing PAT preflight behavior.
+refresh-pat-snapshot:
+	@sudo sh -c '\
+		set -eu; \
+		src="$(PAT_MEMTYPE_SOURCE)"; \
+		dst="$(PAT_MEMTYPE_SNAPSHOT)"; \
+		dir="$${dst%/*}"; \
+		install -d -m 0700 "$$dir"; \
+		rm -f -- "$$dst"; \
+		if [ ! -r "$$src" ]; then \
+			echo ">> warning: cannot read $$src; PAT snapshot unavailable" >&2; \
+			exit 0; \
+		fi; \
+		tmp=$$(mktemp "$$dir/.pat_memtype_list.XXXXXX"); \
+		trap "rm -f -- '\''$$tmp'\''" EXIT HUP INT TERM; \
+		if ! cat "$$src" > "$$tmp" || [ ! -s "$$tmp" ]; then \
+			echo ">> warning: failed to capture $$src; PAT snapshot unavailable" >&2; \
+			exit 0; \
+		fi; \
+		chmod 0400 "$$tmp"; \
+		mv -f "$$tmp" "$$dst"; \
+		trap - EXIT HUP INT TERM; \
+		echo ">> refreshed PAT snapshot: $$dst"'
+
 # Optional MAP_MODE=0|1 overrides the baked-in default BAR map mode for this load
 # (e.g. `make insmod MAP_MODE=0`). Empty -> load the cmake-configured default.
-insmod:
+insmod: refresh-pat-snapshot
 	sudo insmod phoenixfs.ko $(if $(strip $(MAP_MODE)),phxfs_map_mode=$(strip $(MAP_MODE)),)
 # Named targets so the mode is TAB-completable (make completes target names,
 # not VAR=val assignments).
-insmod-staging:
+insmod-staging: refresh-pat-snapshot
 	sudo insmod phoenixfs.ko phxfs_map_mode=1
-insmod-full:
+insmod-full: refresh-pat-snapshot
 	sudo insmod phoenixfs.ko phxfs_map_mode=0
 rmmod:
 	sudo rmmod phoenixfs
-install:
+install: refresh-pat-snapshot
 	@if [ ! -f phoenixfs.ko ]; then \
 		echo ">> phoenixfs.ko not found (build first, or module disabled); skipping"; \
 		exit 0; \
