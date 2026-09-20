@@ -250,11 +250,9 @@ struct p2p_vmap {
     u64          size;
     u64          cpuvaddr;
     release_fn   release;
-    struct page **pages;
     unsigned long page_size;
     void        *data;           /* points to struct gpu_region */
     unsigned long n_addrs;
-    uint64_t     addrs[1];
 };
 
 struct phxfs_dev_info_s {

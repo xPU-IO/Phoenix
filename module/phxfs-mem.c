@@ -101,10 +101,6 @@ void release_gpu_memory(struct p2p_vmap* map)
         kfree(gd);
         map->data = NULL;
     }
-	if(map->pages!=NULL)
-	{
-		kfree(map->pages);
-	}
 	if(map!=NULL)
     {
 		kfree(map);
@@ -257,7 +253,7 @@ int phxfs_map_dev_addr_inner(phxfs_mmap_buffer_t mbuffer, u64 devaddr, u64 dev_l
      * map descriptor scales as region/8192, only exceeds kmalloc above ~32GiB;
      * kept on kmalloc so release_gpu_memory()'s kfree() path stays valid.
      */
-    mbuffer->map = kmalloc(sizeof(struct p2p_vmap) + (nr_dev_pages - 1) * sizeof(uint64_t), GFP_KERNEL);
+    mbuffer->map = kmalloc(sizeof(struct p2p_vmap), GFP_KERNEL);
     if (mbuffer->map == NULL)
     {
         phxfs_err("Failed to allocate mapping descriptor\n");
@@ -270,11 +266,7 @@ int phxfs_map_dev_addr_inner(phxfs_mmap_buffer_t mbuffer, u64 devaddr, u64 dev_l
     mbuffer->map->size = dev_len;
     mbuffer->map->gpuvaddr = devaddr;
     mbuffer->map->n_addrs = mbuffer->dev_page_num;
-    mbuffer->map->pages = NULL;
-    for (i = 0; i < mbuffer->map->n_addrs; ++i)
-    {
-        mbuffer->map->addrs[i] = 0;
-    } 
+
     gd = kmalloc(sizeof(struct gpu_region), GFP_KERNEL);
     if (gd == NULL)
     {
