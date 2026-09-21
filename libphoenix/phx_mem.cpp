@@ -127,9 +127,8 @@ static int __phxfs_regmem(phxfs_mmap_buffer_t *mbuffer, u64 dev_addr, u64 c_addr
     phxfs_ioctl_para_t para;
     int ret;
 
-    if (!mbuffer->init_stat) {
-        return -1;
-    }
+    if (!mbuffer->init_stat)
+        return -ENODEV;
 
     para.map_param.n_vaddr = (u64)dev_addr;
     para.map_param.c_vaddr = (u64)c_addr;
@@ -137,17 +136,17 @@ static int __phxfs_regmem(phxfs_mmap_buffer_t *mbuffer, u64 dev_addr, u64 c_addr
     para.map_param.n_size = len;
     para.map_param.dev.dev_id = mbuffer->device_id;
     ret = ioctl(mbuffer->bdev_fd, PHXFS_IOCTL_MAP, &para);
-
-    return ret;
+    return ret < 0 ? -errno : ret;
 }
 
 static int __phxfs_deregmem(phxfs_mmap_buffer_t *pb, u64 dev_addr, u64 c_addr, size_t len) {
     phxfs_ioctl_para_t para;
     int ret;
 
-    if(!pb->init_stat) {
-        return -1;
-    }
+    /* close() marks init_stat=false before draining, but keeps the character
+     * device fd open until all registrations have been explicitly unmapped. */
+    if (pb->bdev_fd < 0)
+        return -ENODEV;
 
     para.map_param.n_vaddr = (u64)dev_addr;
     para.map_param.c_vaddr = (u64)c_addr;
@@ -156,8 +155,7 @@ static int __phxfs_deregmem(phxfs_mmap_buffer_t *pb, u64 dev_addr, u64 c_addr, s
     para.map_param.dev.dev_id = pb->device_id;
 
     ret = ioctl(pb->bdev_fd, PHXFS_IOCTL_UNMAP, &para);
-
-    return ret;
+    return ret < 0 ? -errno : ret;
 }
 
 /* ------------------------------------------------------------------ */
@@ -273,10 +271,11 @@ int phx_regmem_internal(phxfs_mmap_buffer_t *pb, const void *addr, size_t len,
 
     int ret = __phxfs_regmem(pb, p2p_map->dev_addr, (uint64_t)p2p_map->vaddr, len);
     if (ret) {
-        fprintf(stderr, "%s: __phxfs_regmem fail ret=%d (%s)\n", __func__, ret, strerror(errno));
+        fprintf(stderr, "%s: __phxfs_regmem fail ret=%d (%s)\n",
+                __func__, ret, strerror(-ret));
         munmap(p2p_map->vaddr, len);
         free(p2p_map);
-        return -EFAULT;
+        return ret;
     }
     p2p_map->has_reg = true;
 
@@ -318,14 +317,8 @@ int phxfs_regmem(int device_id, const void *addr, size_t len, void **target_addr
         fprintf(stderr, "%s: NULL addr/target_addr\n", __func__);
         return -EINVAL;
     }
-    if (len == 0 || len % HUGE_PAGE_SIZE != 0) {
-        fprintf(stderr, "%s: bad len %zu (nonzero, 64KiB-aligned required)\n",
-                __func__, len);
-        return -EINVAL;
-    }
-    if ((uint64_t)(uintptr_t)addr % HUGE_PAGE_SIZE != 0) {
-        fprintf(stderr, "%s: addr %p not %d-byte aligned\n",
-                __func__, addr, HUGE_PAGE_SIZE);
+    if (len == 0) {
+        fprintf(stderr, "%s: zero length\n", __func__);
         return -EINVAL;
     }
     if ((uint64_t)(uintptr_t)addr > UINT64_MAX - len) {
@@ -349,6 +342,21 @@ int phxfs_regmem(int device_id, const void *addr, size_t len, void **target_addr
         *target_addr = (void *)addr;
         dev_put(pb);
         return 0;
+    }
+
+    size_t page_size = devconn && devconn->page_size
+        ? (size_t)devconn->page_size : HUGE_PAGE_SIZE;
+    if (len % page_size != 0) {
+        fprintf(stderr, "%s: len %zu not %zu-byte aligned\n",
+                __func__, len, page_size);
+        dev_put(pb);
+        return -EINVAL;
+    }
+    if ((uint64_t)(uintptr_t)addr % page_size != 0) {
+        fprintf(stderr, "%s: addr %p not %zu-byte aligned\n",
+                __func__, addr, page_size);
+        dev_put(pb);
+        return -EINVAL;
     }
 
     int rc = phx_regmem_internal(pb, addr, len, target_addr);

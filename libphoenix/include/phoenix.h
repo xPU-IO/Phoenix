@@ -55,10 +55,13 @@ static inline int phxfs_find_dev_for_cuda_gpu(int cuda_gpu_id) {
  * IMPORTANT: read/write and the batch API identify a buffer by its
  * original DEVICE address (`addr` here, `buf` there) — NOT by `*target_addr`.
  * `*target_addr` is an internal host-mapped handle returned for reference; do
- * not pass it back as the I/O buffer or the lookup will miss. `addr` must be
- * nonzero, `len` nonzero and 64KiB-aligned; overlapping a live registration
- * is rejected, while an exact-duplicate registration is reference-counted and
- * reused (deregister once per register).
+ * not pass it back as the I/O buffer or the lookup will miss. In FULL mode,
+ * `addr` and `len` must be aligned to the device page size. In
+ * STAGING mode the user buffer is not pinned, so only nonzero length and
+ * address-range validity are required; the internal staging pool has its own
+ * physical 2MiB alignment contract. Overlapping FULL registrations are
+ * rejected, while an exact duplicate is reference-counted and reused
+ * (deregister once per register).
  */
 int phxfs_regmem(int device_id, const void *addr, size_t len, void **target_addr);
 int phxfs_deregmem(int device, const void *addr, size_t len);

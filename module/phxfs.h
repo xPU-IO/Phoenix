@@ -13,6 +13,7 @@
 #include <linux/pci.h>
 #include <linux/pci-p2pdma.h>
 #include <linux/printk.h>
+#include <linux/refcount.h>
 #include <linux/workqueue.h>
 
 #define MAX_DEV_NUM 16
@@ -238,18 +239,18 @@ struct phxfs_ctrl {
 
 /* P2P mapping descriptor (vendor-agnostic) */
 struct p2p_vmap;
-typedef void (*release_fn)(struct p2p_vmap*);
 
 struct gpu_region {
     struct phxfs_page_table *pt;
 };
 
 struct p2p_vmap {
+    refcount_t   refs;            /* VMA owner + registered reclaim callback */
+    atomic_t     callback_state;  /* live/running/dropped; see phxfs-mem.c */
     u64          gpuvaddr;
     u64          gpupaddr;
     u64          size;
     u64          cpuvaddr;
-    release_fn   release;
     unsigned long page_size;
     void        *data;           /* points to struct gpu_region */
     unsigned long n_addrs;

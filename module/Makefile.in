@@ -2,20 +2,37 @@ src := @module_root@
 obj-m += phoenixfs.o
 
 KVER ?= $(shell uname -r)
-ccflags-y += @module_ccflags@
+ccflags-y += @module_ccflags@ -I@module_root@
+
+PHXFS_VENDOR_SOURCE := $(patsubst %.o,%.c,@VENDOR_BACKEND@)
+PHXFS_SOURCE_FILES := phxfs-mem.c phxfs-backend.c $(PHXFS_VENDOR_SOURCE) phxfs.c phxfs-p2p-service.c phxfs-p2pdma.c
 
 phoenixfs-objs := phxfs-mem.o phxfs-backend.o @VENDOR_BACKEND@ phxfs.o phxfs-p2p-service.o phxfs-p2pdma.o
 KERNEL_SRC := /lib/modules/$(KVER)/build
 PAT_MEMTYPE_SOURCE := /sys/kernel/debug/x86/pat_memtype_list
 PAT_MEMTYPE_SNAPSHOT := /run/phxfs/pat_memtype_list
 
-.PHONY: all phxfs configure refresh-pat-snapshot insmod insmod-staging insmod-full rmmod install clean
+.PHONY: all phxfs configure prepare_sources refresh-pat-snapshot insmod insmod-staging insmod-full rmmod install clean
 
 all: phxfs
 
 phxfs: configure
 	$(MAKE) -C $(KERNEL_SRC) M=@module_output@ modules KBUILD_EXTRA_SYMBOLS=@VENDOR_KERNEL_MODULE@
-configure:
+
+# Recent kbuild versions resolve external-module sources relative to M= and no
+# longer honor the legacy `src :=` redirect above. Keep the sources visible in
+# the output directory so both old and new kernels use the same Makefile.
+ifneq ($(abspath @module_output@),$(abspath @module_root@))
+prepare_sources:
+	@for file in $(PHXFS_SOURCE_FILES); do \
+		ln -sfn "@module_root@/$$file" "@module_output@/$$file"; \
+	done
+else
+prepare_sources:
+	@:
+endif
+
+configure: prepare_sources
 	@ @module_root@/configure $(KVER) @module_root@
 
 # kernel_read() cannot consume the legacy debugfs .read implementation on

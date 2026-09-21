@@ -78,24 +78,66 @@ int phx_staging_setup(int device_id) {
         return -EINVAL;
 
     size_t sz = staging_size_bytes();
-    /* Device allocators take no alignment hint, so over-allocate by one
-     * granule and place the pool at the first aligned address inside it. This
-     * makes the pool's virtual span 2MiB-aligned and -sized; the BAR offsets it
-     * is pinned at are still the driver's choice, and the kernel rejects the
-     * registration loudly if they do not come out aligned and contiguous. */
+    if (sz > SIZE_MAX - PHX_STAGING_GRANULARITY) {
+        dev_put(pb);
+        return -EOVERFLOW;
+    }
+    size_t alloc_sz = sz + PHX_STAGING_GRANULARITY;
+    /* Device allocators take no physical-alignment hint. Keep one extra 2MiB
+     * granule and try page-aligned windows within it: for a contiguous
+     * allocation, shifting the virtual start by one device page shifts the BAR
+     * start by the same amount, so one of the windows is 2MiB-aligned. */
     void *raw = NULL;
-    int rc = devconn->mem_alloc(device_id, sz + PHX_STAGING_GRANULARITY, &raw);
+    int rc = devconn->mem_alloc(device_id, alloc_sz, &raw);
     if (rc != 0) {
         dev_put(pb);
         return rc;
     }
-    void *dptr = (void *)(((uintptr_t)raw + PHX_STAGING_GRANULARITY - 1) &
-                          ~(uintptr_t)(PHX_STAGING_GRANULARITY - 1));
+
+    uintptr_t raw_addr = (uintptr_t)raw;
+    uintptr_t raw_end = raw_addr + alloc_sz;
+    size_t step = devconn->page_size ? (size_t)devconn->page_size : 64 * 1024;
+    if (raw_end < raw_addr || step == 0 || step > PHX_STAGING_GRANULARITY ||
+        PHX_STAGING_GRANULARITY % step != 0) {
+        devconn->mem_free(raw);
+        dev_put(pb);
+        return -EINVAL;
+    }
+    uintptr_t first = (raw_addr + step - 1) / step * step;
+    uintptr_t preferred = (raw_addr + PHX_STAGING_GRANULARITY - 1) /
+                          PHX_STAGING_GRANULARITY * PHX_STAGING_GRANULARITY;
+    if (first < raw_addr || preferred < raw_addr) {
+        devconn->mem_free(raw);
+        dev_put(pb);
+        return -EOVERFLOW;
+    }
 
     /* Real (non-no-op) registration of the staging pool; this is the single
-     * buffer that triggers the kernel's bounded staging remap. */
+     * buffer that triggers the kernel's bounded staging remap. Try the
+     * traditional 2MiB virtual alignment first, then the remaining page
+     * offsets. -EINVAL is the kernel's alignment/contiguity rejection; other
+     * failures are not helped by trying another window. */
+    void *dptr = NULL;
     void *host = NULL;
-    rc = phx_regmem_internal(pb, dptr, sz, &host);
+    if (preferred <= raw_end && sz <= raw_end - preferred) {
+        dptr = (void *)preferred;
+        rc = phx_regmem_internal(pb, dptr, sz, &host);
+    } else {
+        rc = -EINVAL;
+    }
+    for (uintptr_t candidate = first;
+         rc == -EINVAL && candidate <= raw_end && sz <= raw_end - candidate;
+         candidate += step) {
+        if (candidate == preferred) {
+            if (candidate > UINTPTR_MAX - step)
+                break;
+            continue;
+        }
+        dptr = (void *)candidate;
+        rc = phx_regmem_internal(pb, dptr, sz, &host);
+        if (candidate > UINTPTR_MAX - step)
+            break;
+    }
     if (rc != 0) {
         devconn->mem_free(raw);
         dev_put(pb);

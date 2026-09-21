@@ -20,6 +20,26 @@ static DEFINE_HASHTABLE(phxfs_io_mbuffer_hash, PHXFS_MAX_SHADOW_ALLOCS_ORDER);
 static spinlock_t lock ____cacheline_aligned; 
 atomic_t base_index_cnt = ATOMIC_INIT(0);
 
+enum phxfs_callback_state {
+    PHXFS_CALLBACK_LIVE = 0,
+    PHXFS_CALLBACK_RUNNING,
+    PHXFS_CALLBACK_DROPPED,
+};
+
+static void p2p_vmap_put(struct p2p_vmap *map)
+{
+    if (refcount_dec_and_test(&map->refs))
+        kfree(map);
+}
+
+/* Drop the callback's map reference if no force-reclaim callback claimed it. */
+static void p2p_vmap_drop_callback_ref(struct p2p_vmap *map)
+{
+    if (atomic_cmpxchg(&map->callback_state, PHXFS_CALLBACK_LIVE,
+                       PHXFS_CALLBACK_DROPPED) == PHXFS_CALLBACK_LIVE)
+        p2p_vmap_put(map);
+}
+
 /*
  * Look up the virtual address for a BAR offset using multi-segment mapping.
  * Uses binary search on segments array for efficiency.
@@ -65,78 +85,64 @@ void *phxfs_bar_offset_to_va(struct phxfs_dev *dev, u64 bar_offset)
 	return NULL;
 }
 
-void unmap_and_release(struct p2p_vmap* map)
-{
-    if (!map)
-        return;
-
-    if (map->release != NULL && map->data != NULL)
-    {
-        map->release(map);
-    }
-
-	if(map!=NULL)
-    {
-		kfree(map);
-        map = NULL;
-    }
-    phxfs_info("unmap_and_release\n");
-}
-
-
 void release_gpu_memory(struct p2p_vmap* map)
 {
     struct gpu_region* gd;
+    struct phxfs_page_table *pt;
+    bool owns_callback;
 
     if (!map)
         return;
 
-    gd = (struct gpu_region*) map->data;
-    if (gd != NULL)
-    {
-        if (gd->pt != NULL)
-        {
-            phxfs_p2p->put_pages(map->gpuvaddr, gd->pt);
+    /* Win callback ownership before calling put_pages(). If force reclaim is
+     * already running, that callback exclusively owns the vendor page table. */
+    owns_callback = atomic_cmpxchg(&map->callback_state, PHXFS_CALLBACK_LIVE,
+                                   PHXFS_CALLBACK_DROPPED) ==
+                    PHXFS_CALLBACK_LIVE;
+    if (owns_callback) {
+        gd = (struct gpu_region *)xchg(&map->data, NULL);
+        if (gd != NULL) {
+            pt = xchg(&gd->pt, NULL);
+            if (pt != NULL)
+                phxfs_p2p->put_pages(map->gpuvaddr, pt);
+            kfree(gd);
         }
-        kfree(gd);
-        map->data = NULL;
+        p2p_vmap_put(map);  /* registered reclaim callback */
     }
-	if(map!=NULL)
-    {
-		kfree(map);
-        map = NULL;
-    }
+    p2p_vmap_put(map);  /* VMA/registration owner */
 }
 
 static void force_release_gpu_memory(struct p2p_vmap* map)
 {
     struct gpu_region* gd;
+    struct phxfs_page_table *pt;
 
     if (WARN_ON(!map))
         return;
 
-    gd = (struct gpu_region*) map->data;
+    if (atomic_cmpxchg(&map->callback_state, PHXFS_CALLBACK_LIVE,
+                       PHXFS_CALLBACK_RUNNING) != PHXFS_CALLBACK_LIVE)
+        return;
+
+    gd = (struct gpu_region *)xchg(&map->data, NULL);
 
 
     if (gd != NULL)
     {
 
-        if (gd->pt != NULL)
-        {
-#ifndef CONFIG_PHXFS_VENDOR_METAX
-            phxfs_p2p->put_pages(map->gpuvaddr, gd->pt);
-#else
-            phxfs_p2p->free_page_table(gd->pt);
-#endif
-        }
+        pt = xchg(&gd->pt, NULL);
+        if (pt != NULL)
+            phxfs_p2p->free_page_table(pt);
 
         kfree(gd);
-        map->data = NULL;
 
         phxfs_warn("Device driver forcefully reclaimed %lu GPU pages\n", map->n_addrs);
     	
 	}
-	unmap_and_release(map);
+	/* The phony-buffer VMA still owns `map`. Keep the descriptor alive until
+	 * its ->close path; only the vendor page table was reclaimed here. */
+	atomic_set(&map->callback_state, PHXFS_CALLBACK_DROPPED);
+	p2p_vmap_put(map);  /* registered reclaim callback */
 }
 
 phxfs_mmap_buffer_t phxfs_check_and_bind_phony_buffer(u64 cpuvaddr, u64 length) { 
@@ -249,11 +255,9 @@ int phxfs_map_dev_addr_inner(phxfs_mmap_buffer_t mbuffer, u64 devaddr, u64 dev_l
         goto out;
     }
 
-    /*
-     * map descriptor scales as region/8192, only exceeds kmalloc above ~32GiB;
-     * kept on kmalloc so release_gpu_memory()'s kfree() path stays valid.
-     */
-    mbuffer->map = kmalloc(sizeof(struct p2p_vmap), GFP_KERNEL);
+    /* The descriptor contains fixed-size metadata; physical addresses live in
+     * mbuffer->dev_page_addrs, which is already allocated separately. */
+    mbuffer->map = kzalloc(sizeof(struct p2p_vmap), GFP_KERNEL);
     if (mbuffer->map == NULL)
     {
         phxfs_err("Failed to allocate mapping descriptor\n");
@@ -261,8 +265,9 @@ int phxfs_map_dev_addr_inner(phxfs_mmap_buffer_t mbuffer, u64 devaddr, u64 dev_l
         goto out;
     }
 
+    refcount_set(&mbuffer->map->refs, 2);
+    atomic_set(&mbuffer->map->callback_state, PHXFS_CALLBACK_LIVE);
     mbuffer->map->page_size = page_size;
-    mbuffer->map->release = release_gpu_memory;
     mbuffer->map->size = dev_len;
     mbuffer->map->gpuvaddr = devaddr;
     mbuffer->map->n_addrs = mbuffer->dev_page_num;
@@ -278,14 +283,14 @@ int phxfs_map_dev_addr_inner(phxfs_mmap_buffer_t mbuffer, u64 devaddr, u64 dev_l
     mbuffer->map->data = (void*)gd;
     ret = phxfs_p2p->get_pages(mbuffer->map->gpuvaddr, page_size * mbuffer->map->n_addrs, &gd->pt, 
         (void (*)(void*)) force_release_gpu_memory, mbuffer->map);
+    if (gd->pt != NULL)
+        pages_pinned = true;
     if (ret != 0 || gd->pt == NULL) {
         phxfs_err("phxfs_p2p->get_pages failed, ret=%d\n", ret);
         if (ret == 0)
             ret = -ENOMEM;
         goto out;
     }
-    pages_pinned = true;
-
     ret = phxfs_p2p->get_phys_addrs(gd->pt, dev_page_addrs, mbuffer->map->n_addrs);
     if (ret) {
         phxfs_err("get_phys_addrs failed, ret=%d\n", ret);
@@ -369,19 +374,19 @@ out:
      * registration above ~2GiB failed (ppages kmalloc returned NULL and the
      * unchecked get_pages / out: path freed the still-referenced map & gd).
      */
-    if (pages_pinned && gd != NULL && gd->pt != NULL) {
-        phxfs_p2p->put_pages(devaddr, gd->pt);
-        gd->pt = NULL;
-    }
-    if (gd != NULL) {
-        kfree(gd);
-        gd = NULL;
-        if (mbuffer->map != NULL)
-            mbuffer->map->data = NULL;
-    }
     if (mbuffer->map != NULL) {
-        kfree(mbuffer->map);
+        if (pages_pinned) {
+            release_gpu_memory(mbuffer->map);
+        } else {
+            struct gpu_region *owned;
+
+            owned = (struct gpu_region *)xchg(&mbuffer->map->data, NULL);
+            kfree(owned);
+            p2p_vmap_drop_callback_ref(mbuffer->map);
+            p2p_vmap_put(mbuffer->map);
+        }
         mbuffer->map = NULL;
+        gd = NULL;
     }
     if (mbuffer->ppages != NULL) {
         kvfree(mbuffer->ppages);

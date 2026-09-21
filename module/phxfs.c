@@ -12,6 +12,7 @@
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/memory.h>
+#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/nvme_ioctl.h>
 #include <linux/pci-p2pdma.h>
@@ -391,6 +392,7 @@ static int phxfs_devm_memremap(struct phxfs_dev *phx_dev) {
 	for (i = 0; i < n_segments; i++) {
 		struct dev_pagemap *pgmap;
 		struct phxfs_pgmap *p2p_pgmap;
+		void *va;
 
 		p2p_pgmap = devm_kzalloc(&phx_dev->dev->dev,
 					  sizeof(struct phxfs_pgmap), GFP_KERNEL);
@@ -417,28 +419,36 @@ static int phxfs_devm_memremap(struct phxfs_dev *phx_dev) {
 #endif
 		pgmap->type = MEMORY_DEVICE_PCI_P2PDMA;
 
-		segs[i].va = devm_memremap_pages(&phx_dev->dev->dev, pgmap);
-		if (IS_ERR_OR_NULL(segs[i].va)) {
+		va = devm_memremap_pages(&phx_dev->dev->dev, pgmap);
+		if (IS_ERR_OR_NULL(va)) {
 			phxfs_warn("phxfs%d: devm_memremap_pages failed for "
 			       "segment %d (offset 0x%llx, size %llu MiB), err=%ld\n",
 			       phx_dev->idx, i,
 			       segs[i].phys_start - phx_dev->paddr,
 			       segs[i].size / (1024 * 1024),
-			       PTR_ERR(segs[i].va));
-			segs[i].va = NULL;
+			       PTR_ERR(va));
 			devm_kfree(&phx_dev->dev->dev, p2p_pgmap);
 			/* Continue with remaining segments */
 			continue;
 		}
 
-		segs[i].p2p_pgmap = p2p_pgmap;
+		/* Keep successful entries packed at the front. Cleanup and binary
+		 * search both iterate [0, num_segments), so holes would leak later
+		 * mappings across module unload/reload. */
+		if (phx_dev->num_segments != i) {
+			segs[phx_dev->num_segments] = segs[i];
+			segs[i].va = NULL;
+			segs[i].p2p_pgmap = NULL;
+		}
+		segs[phx_dev->num_segments].va = va;
+		segs[phx_dev->num_segments].p2p_pgmap = p2p_pgmap;
 		phx_dev->num_segments++;
 		phxfs_info("phxfs%d: segment %d remapped: offset 0x%llx, "
 		       "size %llu MiB, va=0x%lx\n",
-		       phx_dev->idx, i,
-		       segs[i].phys_start - phx_dev->paddr,
-		       segs[i].size / (1024 * 1024),
-		       (unsigned long)segs[i].va);
+		       phx_dev->idx, phx_dev->num_segments - 1,
+		       segs[phx_dev->num_segments - 1].phys_start - phx_dev->paddr,
+		       segs[phx_dev->num_segments - 1].size / (1024 * 1024),
+		       (unsigned long)va);
 	}
 
 	if (phx_dev->num_segments == 0) {
@@ -473,18 +483,16 @@ fallback_single:
 	{
 		struct dev_pagemap *pgmap;
 
-		/*
-		 * Unlike the segment path above, this covers the head/tail
-		 * reservations too -- including the p2pdma bootstrap slice, whose
-		 * pgmap is already installed on that range. devm_memremap_pages()
-		 * may therefore refuse it; the slice is only 2 MiB at the very
-		 * start of the BAR, so this is the one place where the bootstrap
-		 * can get in our way.
-		 */
-		if (phx_dev->p2p_slice_size)
-			phxfs_warn("phxfs%d: full-BAR fallback overlaps the p2pdma "
-			       "bootstrap slice [0x%llx+0x%llx)\n", phx_dev->idx,
-			       phx_dev->p2p_slice_start, phx_dev->p2p_slice_size);
+		/* The bootstrap pgmap is devm-owned by the PCI device and survives a
+		 * phoenixfs reload. A whole-BAR fallback would overlap it and trigger
+		 * pagemap_range()'s "Conflicting mapping in same section" warning. */
+		if (phx_dev->p2p_slice_size) {
+			phxfs_err("phxfs%d: refusing full-BAR fallback: persistent "
+				   "p2pdma slice [0x%llx+0x%llx) must remain excluded\n",
+				   phx_dev->idx, phx_dev->p2p_slice_start,
+				   phx_dev->p2p_slice_size);
+			return -EEXIST;
+		}
 
 		phx_dev->p2p_pgmap = devm_kzalloc(&phx_dev->dev->dev,
 						    sizeof(struct phxfs_pgmap), GFP_KERNEL);
@@ -794,6 +802,21 @@ int phxfs_staging_ensure_span(struct phxfs_dev *dev, const u64 *phys,
 	return ret;
 }
 
+/* Keep the mapping check compatible with kernels that migrated from page APIs
+ * to folio APIs at different times, including vendor backports. */
+static inline bool phxfs_page_is_mapped(struct page *page)
+{
+#ifdef PHXFS_HAVE_FOLIO_MAPPED
+	return folio_mapped(page_folio(page));
+#elif defined(PHXFS_HAVE_PAGE_MAPCOUNT)
+	return page_mapcount(page) > 0;
+#elif defined(PHXFS_HAVE_PAGE_MAPPED)
+	return page_mapped(page);
+#else
+#error "No supported page mapping helper configured"
+#endif
+}
+
 /*
  * True if every page of [phys_start, phys_start + size) is idle: refcount back
  * to the single reference devm_memremap_pages() established and no user mapping
@@ -809,7 +832,7 @@ static bool unit_pages_idle(u64 phys_start, u64 size)
 	for (; pfn < end; pfn++) {
 		struct page *page = pfn_to_page(pfn);
 
-		if (page_count(page) != 1 || page_mapcount(page) > 0)
+		if (page_count(page) != 1 || phxfs_page_is_mapped(page))
 			return false;
 	}
 	return true;
@@ -911,8 +934,58 @@ void phxfs_staging_release_cancel(struct phxfs_dev *dev)
 		cancel_delayed_work_sync(&dev->seg_release_work);
 }
 
+/* Release every BAR mapping owned directly by phoenixfs for one device.
+ * The pci_p2pdma bootstrap slice is owned by the PCI device and intentionally
+ * persists; phxfs_p2pdma_setup() recovers it on the next load. */
+static void phxfs_dev_unmap(struct phxfs_dev *dev)
+{
+	int i;
+
+	if (!dev || !dev->dev)
+		return;
+	phxfs_staging_release_cancel(dev);
+
+	if (dev->segments) {
+		for (i = 0; i < dev->num_segments; i++) {
+			if (dev->segments[i].p2p_pgmap && dev->segments[i].va)
+				devm_memunmap_pages(&dev->dev->dev,
+						    &dev->segments[i].p2p_pgmap->pgmap);
+			if (dev->segments[i].p2p_pgmap)
+				devm_kfree(&dev->dev->dev,
+					   dev->segments[i].p2p_pgmap);
+		}
+		kfree(dev->segments);
+	} else if (dev->remap && dev->p2p_pgmap) {
+		devm_memunmap_pages(&dev->dev->dev, &dev->p2p_pgmap->pgmap);
+		devm_kfree(&dev->dev->dev, dev->p2p_pgmap);
+	}
+
+	dev->segments = NULL;
+	dev->num_segments = 0;
+	dev->seg_capacity = 0;
+	dev->p2p_pgmap = NULL;
+	dev->pci_mem_va = NULL;
+	dev->remap = 0;
+}
+
+static void phxfs_ctrl_cleanup(struct phxfs_ctrl *dev_ctrl, int count)
+{
+	int i;
+
+	for (i = count - 1; i >= 0; i--) {
+		struct phxfs_dev *dev = &dev_ctrl->phx_dev[i];
+
+		if (!dev->dev)
+			continue;
+		phxfs_dev_unmap(dev);
+		pci_dev_put(dev->dev);
+		dev->dev = NULL;
+	}
+}
+
 static int phxfs_ctrl_init(struct phxfs_ctrl *dev_ctrl, u32 dev_num) {
 	int i, j, ret;
+	int initialized = 0;
 	u64 size;
 	u16 bus, fn;
 	int domain;
@@ -928,7 +1001,8 @@ static int phxfs_ctrl_init(struct phxfs_ctrl *dev_ctrl, u32 dev_num) {
 		dev_ctrl->phx_dev[i].dev = pci_get_domain_bus_and_slot(domain, bus, fn);
 		if (dev_ctrl->phx_dev[i].dev == NULL) {
 			phxfs_warn("npu%u: pci_get_domain_bus_and_slot failed\n", i);
-			return -1;
+			ret = -ENODEV;
+			goto err_cleanup;
 		}
 		dev_ctrl->phx_dev[i].bar = -1;
 		dev_ctrl->phx_dev[i].bus_offset = 0;
@@ -956,6 +1030,7 @@ static int phxfs_ctrl_init(struct phxfs_ctrl *dev_ctrl, u32 dev_num) {
 		dev_ctrl->phx_dev[i].seg_release_tries = 0;
 		INIT_DELAYED_WORK(&dev_ctrl->phx_dev[i].seg_release_work,
 				  phxfs_seg_release_work_fn);
+		initialized = i + 1;
 		phxfs_info("npu%u: bus is %x, size is %llu, paddr is %llx\n", i,
 			dev_ctrl->phx_dev[i].dev->bus->number, dev_ctrl->phx_dev[i].size,
 			dev_ctrl->phx_dev[i].paddr);
@@ -967,7 +1042,7 @@ static int phxfs_ctrl_init(struct phxfs_ctrl *dev_ctrl, u32 dev_num) {
 		 */
 		ret = phxfs_p2pdma_setup(&dev_ctrl->phx_dev[i]);
 		if (ret)
-			return ret;
+			goto err_cleanup;
 
 		/*
 		 * Full mode remaps the whole BAR up front. Staging mode defers
@@ -979,13 +1054,18 @@ static int phxfs_ctrl_init(struct phxfs_ctrl *dev_ctrl, u32 dev_num) {
 		if (phxfs_map_mode == PHXFS_MAP_MODE_FULL) {
 			ret = phxfs_devm_memremap(&dev_ctrl->phx_dev[i]);
 			if (ret)
-				return ret;
+				goto err_cleanup;
 		} else {
 			phxfs_info("phxfs%d: staging mode -- deferring BAR remap "
 			       "until first registration\n", i);
 		}
 	}
 	return 0;
+
+err_cleanup:
+	phxfs_ctrl_cleanup(dev_ctrl, initialized);
+	dev_ctrl->dev_num = 0;
+	return ret;
 }
 
 static int phxfs_open(struct inode *inode, struct file *filp) {
@@ -1095,46 +1175,25 @@ static ssize_t page_size_show(struct device *cdev_device,
 }
 static DEVICE_ATTR_RO(page_size);
 
+static void phxfs_cdev_remove_node(struct cdev *cdev,
+				   struct device *cdev_device, int idx)
+{
+	device_remove_file(cdev_device, &dev_attr_pci_bdf);
+	device_remove_file(cdev_device, &dev_attr_map_mode);
+	device_remove_file(cdev_device, &dev_attr_page_size);
+	cdev_device_del(cdev, cdev_device);
+	ida_simple_remove(&phxfs_chr_minor_ida, idx);
+}
+
 void phxfs_cdev_del(struct cdev *cdev, struct device *cdev_device,
                     struct phxfs_dev *dev) {
 	if (WARN_ON(!cdev || !cdev_device || !dev))
 		return;
 
-	device_remove_file(cdev_device, &dev_attr_pci_bdf);
-	device_remove_file(cdev_device, &dev_attr_map_mode);
-	device_remove_file(cdev_device, &dev_attr_page_size);
-	cdev_device_del(cdev, cdev_device);
-	/* No release worker may run past this point: it touches dev->segments. */
-	phxfs_staging_release_cancel(dev);
-	if (dev->remap) {
-		if (dev->segments && dev->num_segments > 0) {
-			/* Multi-segment cleanup */
-			int i;
-			for (i = 0; i < dev->num_segments; i++) {
-				if (dev->segments[i].p2p_pgmap && dev->segments[i].va) {
-					devm_memunmap_pages(&dev->dev->dev,
-							    &dev->segments[i].p2p_pgmap->pgmap);
-				}
-				if (dev->segments[i].p2p_pgmap) {
-					devm_kfree(&dev->dev->dev, dev->segments[i].p2p_pgmap);
-				}
-			}
-			kfree(dev->segments);
-			dev->segments = NULL;
-			dev->num_segments = 0;
-			dev->seg_capacity = 0;
-			dev->p2p_pgmap = NULL; /* already freed per-segment above */
-		} else if (dev->p2p_pgmap) {
-			/* Legacy single-segment cleanup */
-			devm_memunmap_pages(&dev->dev->dev, &dev->p2p_pgmap->pgmap);
-		}
-		dev->pci_mem_va = NULL;
-	}
-	if (dev->p2p_pgmap != NULL && !(dev->segments && dev->num_segments > 0)) {
-		devm_kfree(&dev->dev->dev, dev->p2p_pgmap);
-	}
+	phxfs_cdev_remove_node(cdev, cdev_device, dev->idx);
+	phxfs_dev_unmap(dev);
+	pci_dev_put(dev->dev);
 	dev->dev = NULL;
-	ida_simple_remove(&phxfs_chr_minor_ida, dev->idx);
 }
 
 int phxfs_cdev_add(struct cdev *cdev, struct device *cdev_device,
@@ -1186,7 +1245,7 @@ int phxfs_cdev_add(struct cdev *cdev, struct device *cdev_device,
 
 int phxfs_cdev_init(struct phxfs_ctrl *ctrl) {
 	int ret = -ENOMEM;
-	int i;
+	int i, j;
 
 	if (!ctrl)
 		return -EINVAL;
@@ -1194,7 +1253,7 @@ int phxfs_cdev_init(struct phxfs_ctrl *ctrl) {
 	ret = alloc_chrdev_region(&phxfs_chr_devt, 0, ctrl->dev_num,
 								"phxfs-generic");
 	if (ret < 0)
-		goto destroy_subsys_class;
+		return ret;
 #ifdef CLASS_CREATE_HAS_TWO_PARAMS
   	phxfs_chr_class = class_create(THIS_MODULE, "phxfs-generic");
 #else
@@ -1206,20 +1265,23 @@ int phxfs_cdev_init(struct phxfs_ctrl *ctrl) {
 	}
 	for (i = 0; i < ctrl->dev_num; i++) {
 		ret = phxfs_cdev_add(&ctrl->phx_dev[i].cdev, &ctrl->phx_dev[i].device,
-							&phxfs_chr_fops, THIS_MODULE, &ctrl->phx_dev[i]);
+								&phxfs_chr_fops, THIS_MODULE, &ctrl->phx_dev[i]);
 		if (ret) {
-		kfree_const(ctrl->phx_dev[i].device.kobj.name);
-		goto unregister_generic_phxfs;
+			for (j = i - 1; j >= 0; j--)
+				phxfs_cdev_remove_node(&ctrl->phx_dev[j].cdev,
+						       &ctrl->phx_dev[j].device,
+						       ctrl->phx_dev[j].idx);
+			goto destroy_subsys_class;
 		}
 	}
 	phxfs_info("phxfs_cdev_init success!\n");
 	return 0;
 
-unregister_generic_phxfs:
-  	unregister_chrdev_region(phxfs_chr_devt, ctrl->dev_num);
-
 destroy_subsys_class:
 	class_destroy(phxfs_chr_class);
+
+unregister_generic_phxfs:
+	unregister_chrdev_region(phxfs_chr_devt, ctrl->dev_num);
 	return ret;
 }
 
@@ -1321,9 +1383,10 @@ static void phxfs_discover_devices(void)
 static int __init phxfs_init(void) {
 	int ret;
 
-	if (phxfs_p2p_backend_init()) {
+	ret = phxfs_p2p_backend_init();
+	if (ret) {
 		phxfs_warn("Could not initialize P2P backend\n");
-		return -1;
+		return ret;
 	}
 
 	phxfs_discover_devices();
@@ -1332,20 +1395,27 @@ static int __init phxfs_init(void) {
 
 	if (npu_num <= 0 || npu_num > MAX_DEV_NUM) {
 		phxfs_err("devdrv_get_devnum error:%u\n", npu_num);
-		return -1;
+		ret = -ENODEV;
+		goto err_backend;
 	}
 	ret = phxfs_ctrl_init(&ctrl, npu_num);
 	if (ret != 0) {
 		phxfs_err("npu_ctrl_init error:%d\n", ret);
-		return -1;
+		goto err_backend;
 	}
 	ret = phxfs_cdev_init(&ctrl);
 	if (ret) {
 		phxfs_err("phxfs_init error!\n");
-		return -1;
+		phxfs_ctrl_cleanup(&ctrl, ctrl.dev_num);
+		ctrl.dev_num = 0;
+		goto err_backend;
 	}
 	phxfs_mbuffer_init();
 	return 0;
+
+err_backend:
+	phxfs_p2p_backend_exit();
+	return ret;
 }
 
 static void __exit phxfs_exit(void) {
@@ -1357,7 +1427,7 @@ static void __exit phxfs_exit(void) {
 	phxfs_p2p_backend_exit();
 
 	class_destroy(phxfs_chr_class);
-	unregister_chrdev_region(phxfs_chr_devt, PHXFS_MINORS);
+	unregister_chrdev_region(phxfs_chr_devt, ctrl.dev_num);
 	ida_destroy(&phxfs_chr_minor_ida);
 
 	phxfs_info("Good bye!\n");

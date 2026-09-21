@@ -132,7 +132,6 @@ int main(int argc, char **argv) {
     const char *path = (argc > 1) ? argv[1] : TEST_FILE;
 
     printf("== phx stream-ordered I/O test, host-function model (file=%s) ==\n", path);
-    printf("io engine: %s\n", phxfs_io_engine_name());
 
     // ---- environment ----
     int gpu = 0;
@@ -164,6 +163,7 @@ int main(int argc, char **argv) {
              "synchronous phxfs_read/phxfs_write)");
         printf("%d run, %d passed, %d failed, %d skipped\n",
                tests_run, tests_passed, tests_failed, tests_skipped + 1);
+        phxfs_close(dev);
         return 0;
     }
 

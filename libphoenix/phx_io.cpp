@@ -174,14 +174,33 @@ ssize_t phxfs_write(int fd, int device_id, void *buf, off_t buf_offset, ssize_t 
 /* ------------------------------------------------------------------ */
 
 /*
- * The batch engine is chosen once at library load (constructor below),
- * not per call, so the hot path just reads a pointer. Preference order:
+ * The batch engine is selected lazily on the first batch operation, not while
+ * the shared library is being loaded. Creating and destroying an io_uring ring
+ * can enter kernel/vendor memory management before CUDA/HIP has initialized.
+ * Preference order:
  * io_uring, falling back to sync. Never NULL: the sync engine always
  * probes successfully.
  */
 static const struct phxfs_io_engine *g_engine = nullptr;
+static pthread_once_t g_engine_once = PTHREAD_ONCE_INIT;
 
 static void phxfs_io_engine_select(void) {
+    const char *requested = getenv("PHXFS_IO_ENGINE");
+    if (requested && strcmp(requested, "sync") == 0) {
+        g_engine = &phxfs_io_engine_sync;
+        return;
+    }
+#ifdef PHXFS_HAVE_LIBURING
+    if (requested && strcmp(requested, "io_uring") == 0) {
+        g_engine = phxfs_io_engine_uring.probe() == 0
+            ? &phxfs_io_engine_uring : &phxfs_io_engine_sync;
+        return;
+    }
+#endif
+    if (requested && requested[0] != '\0')
+        fprintf(stderr, "phxfs: unknown PHXFS_IO_ENGINE='%s'; using auto\n",
+                requested);
+
     const struct phxfs_io_engine *candidates[] = {
 #ifdef PHXFS_HAVE_LIBURING
         &phxfs_io_engine_uring,
@@ -197,14 +216,8 @@ static void phxfs_io_engine_select(void) {
     g_engine = &phxfs_io_engine_sync;  /* guaranteed fallback */
 }
 
-__attribute__((constructor))
-static void phxfs_io_engine_ctor(void) {
-    phxfs_io_engine_select();
-}
-
 const struct phxfs_io_engine *phxfs_io_engine_get(void) {
-    if (!g_engine)          /* defensive: constructor should have run */
-        phxfs_io_engine_select();
+    pthread_once(&g_engine_once, phxfs_io_engine_select);
     return g_engine;
 }
 

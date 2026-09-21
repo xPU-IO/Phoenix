@@ -136,7 +136,7 @@ static void test_various_sizes(int dev_id) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: Misaligned size (should fail)
+// Test 4: Misaligned size (FULL rejects; STAGING is a no-op)
 // ---------------------------------------------------------------------------
 static void test_misaligned_size(int dev_id) {
     printf("\n=== Test 4: Misaligned size (expect failure) ===\n");
@@ -149,7 +149,11 @@ static void test_misaligned_size(int dev_id) {
     cudaDeviceSynchronize();
 
     int ret = phxfs_regmem(dev_id, gpu_buf, size, &target);
-    CHECK(ret != 0, "regmem with misaligned size correctly fails");
+    if (phxfs_get_map_mode(dev_id) == 0)
+        CHECK(ret != 0, "FULL regmem with misaligned size correctly fails");
+    else
+        CHECK(ret == 0 && target == gpu_buf,
+              "STAGING regmem accepts unpinned user-buffer size");
 
     // Should not need deregmem if regmem failed
     if (ret == 0)
