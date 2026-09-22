@@ -85,12 +85,24 @@ static int metax_p2p_get_pages_p(uint64_t vaddr,
 	phxfs_info("metax_p2p_get_page_size: handle=%p, page_size=%u\n", pt->handle, page_size);
 	if (page_size == 0)
 		page_size = 1 << 16;
-	virtual_entries = DIV_ROUND_UP(length, page_size);
+	/*
+	 * Page accounting follows the core's single source of truth
+	 * (phxfs_p2p->page_size, set in the ops table): the registration path's
+	 * nr_dev_pages and the exported path's get_n_pages() are both derived
+	 * from it, and metax_p2p_dma_map_pages_p() divides each sg by
+	 * mpt->page_size, so any other value here makes the entry counts
+	 * disagree and registration fail with -ENOMEM. `data` must NOT be used
+	 * for this: it is the free_cb context and its type differs per call
+	 * site (struct p2p_vmap * on the registration path vs
+	 * struct phxfs_p2p_handle * on the exported path), so a cast reads a
+	 * foreign field layout.
+	 */
+	pt->page_size = phxfs_p2p->page_size;
+	virtual_entries = DIV_ROUND_UP(length, pt->page_size);
 	pt->virtual_entries = virtual_entries;
 	pt->entries = virtual_entries;
     phxfs_info("metax_p2p_get_page_size: handle=%p, virtual_entries=%u\n", pt->handle, virtual_entries);
 
-	pt->page_size = page_size;
 	*page_table = pt;
 	return 0;
 }
