@@ -64,14 +64,18 @@ refresh-pat-snapshot:
 
 # Optional MAP_MODE=0|1 overrides the baked-in default BAR map mode for this load
 # (e.g. `make insmod MAP_MODE=0`). Empty -> load the cmake-configured default.
+# Optional DEBUG_MODE=0|1 applies to every insmod* target and toggles the
+# phxfs_debug module param (phxfs_info logging). Empty -> module default (0).
+# Runtime toggle without a reload:
+#   echo 1 > /sys/module/phoenixfs/parameters/phxfs_debug
 insmod: refresh-pat-snapshot
-	sudo insmod phoenixfs.ko $(if $(strip $(MAP_MODE)),phxfs_map_mode=$(strip $(MAP_MODE)),)
+	sudo insmod phoenixfs.ko $(if $(strip $(MAP_MODE)),phxfs_map_mode=$(strip $(MAP_MODE)),) $(if $(strip $(DEBUG_MODE)),phxfs_debug=$(strip $(DEBUG_MODE)),)
 # Named targets so the mode is TAB-completable (make completes target names,
 # not VAR=val assignments).
 insmod-staging: refresh-pat-snapshot
-	sudo insmod phoenixfs.ko phxfs_map_mode=1
+	sudo insmod phoenixfs.ko phxfs_map_mode=1 $(if $(strip $(DEBUG_MODE)),phxfs_debug=$(strip $(DEBUG_MODE)),)
 insmod-full: refresh-pat-snapshot
-	sudo insmod phoenixfs.ko phxfs_map_mode=0
+	sudo insmod phoenixfs.ko phxfs_map_mode=0 $(if $(strip $(DEBUG_MODE)),phxfs_debug=$(strip $(DEBUG_MODE)),)
 rmmod:
 	sudo rmmod phoenixfs
 install: refresh-pat-snapshot
