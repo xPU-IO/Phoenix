@@ -13,6 +13,15 @@
 #include "phxfs-backend.h"
 #include "phxfs.h"       /* phxfs_err / phxfs_info */
 
+/*
+ * Defined at the bottom of this file (it wraps the functions defined
+ * above it), so this tentative definition just brings the name into
+ * scope. metax_p2p_get_pages_p() reads its .page_size, which makes the
+ * ops table the single source of truth for page accounting: change the
+ * table and the accounting follows.
+ */
+static struct phxfs_p2p_ops metax_p2p_ops;
+
 struct metax_p2p_page_table {
 	void *handle;
 	struct sg_table *sgt;
@@ -86,18 +95,16 @@ static int metax_p2p_get_pages_p(uint64_t vaddr,
 	if (page_size == 0)
 		page_size = 1 << 16;
 	/*
-	 * Page accounting follows the core's single source of truth
-	 * (phxfs_p2p->page_size, set in the ops table): the registration path's
-	 * nr_dev_pages and the exported path's get_n_pages() are both derived
-	 * from it, and metax_p2p_dma_map_pages_p() divides each sg by
-	 * mpt->page_size, so any other value here makes the entry counts
-	 * disagree and registration fail with -ENOMEM. `data` must NOT be used
-	 * for this: it is the free_cb context and its type differs per call
-	 * site (struct p2p_vmap * on the registration path vs
-	 * struct phxfs_p2p_handle * on the exported path), so a cast reads a
-	 * foreign field layout.
+	 * Page accounting follows the ops-table page size (the core derives
+	 * nr_dev_pages / get_n_pages() from it); metax_p2p_dma_map_pages_p()
+	 * divides each sg by mpt->page_size, so any other value here makes the
+	 * entry counts disagree and registration fail with -ENOMEM. `data`
+	 * must NOT be used for this: it is the free_cb context and its type
+	 * differs per call site (struct p2p_vmap * on the registration path
+	 * vs struct phxfs_p2p_handle * on the exported path), so a cast reads
+	 * a foreign field layout.
 	 */
-	pt->page_size = phxfs_p2p->page_size;
+	pt->page_size = metax_p2p_ops.page_size;
 	virtual_entries = DIV_ROUND_UP(length, pt->page_size);
 	pt->virtual_entries = virtual_entries;
 	pt->entries = virtual_entries;
