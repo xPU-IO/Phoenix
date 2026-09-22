@@ -95,8 +95,10 @@ The core passes `force_release_gpu_memory` (wrapped) and `data = mbuffer->map` t
 
 1. 不再对设备侧做任何 unpin（页已被驱动收回）——调用的是 `free_page_table`（只清堆）或等价物；
    performs **no** device-side unpin (the driver already reclaimed) — it calls `free_page_table` (heap-only cleanup) or an equivalent;
-2. 释放核心自己的描述符并打 WARN 日志。
-   frees its own descriptors and logs a WARN.
+2. 释放 vendor page-table wrapper，并保留由 phony-buffer VMA 持有的核心
+   mapping descriptor，直到 VMA close；同时打 WARN 日志。
+   frees the vendor page-table wrapper, while the core mapping descriptor
+   remains owned by the phony-buffer VMA until VMA close; it also logs a WARN.
 
 因此对厂商驱动侧的要求是：回调可在原子或可睡眠上下文中执行（核心仅执行 `kfree` + `printk`），但**必须保证回调返回后页确实已不可再用**，且每个 pin 注册至多触发一次。
 

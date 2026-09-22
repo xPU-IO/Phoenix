@@ -7,17 +7,13 @@
 #include "phxfs.h" 
 
 #define PAGE_SHIFT 12
-#define PHXFS_MIN_BASE_INDEX ((unsigned long)1L<<32)
-#define PHXFS_MAX_SHADOW_ALLOCS_ORDER 12
 
 struct phxfs_mmap_buffer {
     atomic_t ref;   /* one reference per VMA that carries this buffer */
-    struct hlist_node hash_link;
     u64 c_vaddr; // mmap cpu vaddr
     u64 map_len; // mmap len
     u64 n_vaddr; // allocated by cann api
     u64 dev_len; // reg dev len
-    unsigned long base_index;
     unsigned long dev_id; // npu id
     u64 *dev_page_addrs; // dev page io addr list
     unsigned long dev_page_num; // indicate num of dev_page_addrs
@@ -36,9 +32,7 @@ typedef struct phxfs_mmap_buffer* phxfs_mmap_buffer_t;
 int phxfs_map_dev_addr_inner(phxfs_mmap_buffer_t pbuffer, u64 devaddr, u64 dev_len);
 int phxfs_map_dev_addr(phxfs_ioctl_map_t *map_param, u64 devaddr, u64 dev_len, u64 cpuvaddr, u64 length);
 int phxfs_mmap(struct file *filp, struct vm_area_struct *vma);
-void phxfs_mbuffer_init(void);
 void phxfs_mbuffer_put(phxfs_mmap_buffer_t pbuffer);
-phxfs_mmap_buffer_t phxfs_mbuffer_get(unsigned long base_index);
 
 /*
  * Look up the virtual address for a BAR offset using multi-segment mapping.

@@ -142,6 +142,54 @@ if compile_prog "Checking if vma_flags are modifiable directly ..."; then
         output_sym "NVFS_VM_FLAGS_NOT_CONSTANT"
 fi
 
+# Prefer folio_mapped() on kernels that expose the folio API. Older kernels
+# may only provide page_mapcount() or page_mapped(), so probe the actual
+# headers instead of relying on a version cutoff (distributors backport APIs
+# independently).
+cat > $TEST_C <<EOF
+
+#include "test.h"
+#include <linux/mm.h>
+int test (void)
+{
+    struct page *page = NULL;
+    return folio_mapped(page_folio(page));
+}
+EOF
+if compile_prog "Checking if folio_mapped is available ..."; then
+        output_sym "PHXFS_HAVE_FOLIO_MAPPED"
+else
+cat > $TEST_C <<EOF
+
+#include "test.h"
+#include <linux/mm.h>
+int test (void)
+{
+    struct page *page = NULL;
+    return page_mapcount(page);
+}
+EOF
+if compile_prog "Checking if page_mapcount is available ..."; then
+        output_sym "PHXFS_HAVE_PAGE_MAPCOUNT"
+else
+cat > $TEST_C <<EOF
+
+#include "test.h"
+#include <linux/mm.h>
+int test (void)
+{
+    struct page *page = NULL;
+    return page_mapped(page);
+}
+EOF
+if compile_prog "Checking if page_mapped is available ..."; then
+        output_sym "PHXFS_HAVE_PAGE_MAPPED"
+else
+        fatal "No supported page mapping helper found"
+fi
+fi
+fi
+
 echo "#endif" >> $config_host_h
 echo "Configuration complete"
 rm -rf build

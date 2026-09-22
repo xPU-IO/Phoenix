@@ -28,7 +28,7 @@ Drops one client reference on `deviceID`. The last close waits for in-flight ope
 ```c++
 int phxfs_regmem(int device_id, const void *addr, size_t len, void **target_addr);
 ```
-Registers a memory region (`addr`, `len`) for `device_id`: `mmap`s a VMA from the char device, then issues `ioctl(PHXFS_IOCTL_MAP)` to pin the GPU pages into it. Both `addr` and `len` must be non-zero and 64 KiB (device page) aligned. On success, `target_addr` receives the host-mapped address — an **internal handle for reference only**; the I/O calls identify a buffer by its original device address `addr`, never by `target_addr`.
+In FULL mode, registers a memory region (`addr`, `len`) for `device_id`: `mmap`s a VMA from the char device, then issues `ioctl(PHXFS_IOCTL_MAP)` to pin the GPU pages into it. Both `addr` and `len` must be non-zero and aligned to the device page size. In STAGING mode, user-buffer registration is a no-op; the internal staging pool is registered during `phxfs_open` and must satisfy the kernel's physical 2 MiB span contract. On success, `target_addr` receives the host-mapped address in FULL mode, or `addr` in STAGING mode — an **internal handle for reference only**; the I/O calls identify a buffer by its original device address `addr`, never by `target_addr`.
 
 Registration semantics: an exact-duplicate registration (same `addr` + `len`, still live) is reference-counted and reused (deregister once per register); any other overlap with a live registration is rejected with `-EINVAL`.
 
@@ -147,7 +147,7 @@ A kernel module parameter, global to all phxfs devices; query it with `phxfs_get
 | | FULL | STAGING |
 |---|---|---|
 | Kernel BAR handling | entire BAR remapped at probe | only a Phoenix-owned staging pool is remapped |
-| `phxfs_regmem` | real registration (pins GPU pages into a VMA) | no-op |
+| `phxfs_regmem` | real registration (pins GPU pages into a VMA; device-page aligned) | no-op for user buffers (nonzero/range-valid only); internal staging pool is physically 2MiB-aligned |
 | Data path | SSD →(P2P DMA)→ user GPU buffer | SSD →(P2P DMA)→ staging pool →(D2D copy)→ user buffer |
 | Extra GPU memory | none | staging pool, default 256 MB (`PHX_STAGING_SIZE_MB`) |
 | Cost | GPU memory loses RDMA/peermem registerability | an extra D2D hop; stream API unsupported (`-EOPNOTSUPP`) |
@@ -206,6 +206,7 @@ The four families may be mixed freely: one process, and even one batch, can comb
 | fds | caller-owned, never dup'd | caller-owned, never dup'd | caller-owned, never dup'd | caller-owned, never dup'd |
 
 - The worker pool is created lazily on the process's first batch use, shared process-wide, and reused by both batch APIs.
+- The I/O engine is also selected lazily. Set `PHXFS_IO_ENGINE=sync` to bypass io_uring at runtime (useful for vendor-driver isolation); `PHXFS_IO_ENGINE=io_uring` requests it explicitly and falls back to sync if unavailable.
 - No NUMA pinning: P2P DMA never touches host RAM, so pinning would only pick the wrong node.
 - fork(): the pool is lazily re-created in the child, but the parent's P2P mappings and device fds are **not** inherited across fork. Use spawn for multi-process (re-open and re-register in the child), and wait/destroy all outstanding async handles before forking.
 - Only one driver may own the GPU PCIe BAR at a time.

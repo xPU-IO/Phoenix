@@ -13,6 +13,15 @@
 #include "phxfs-backend.h"
 #include "phxfs.h"       /* phxfs_err / phxfs_info */
 
+/*
+ * Defined at the bottom of this file (it wraps the functions defined
+ * above it), so this tentative definition just brings the name into
+ * scope. metax_p2p_get_pages_p() reads its .page_size, which makes the
+ * ops table the single source of truth for page accounting: change the
+ * table and the accounting follows.
+ */
+static struct phxfs_p2p_ops metax_p2p_ops;
+
 struct metax_p2p_page_table {
 	void *handle;
 	struct sg_table *sgt;
@@ -54,7 +63,7 @@ static int metax_p2p_get_pages_p(uint64_t vaddr,
 	uint32_t page_size;
 	uint32_t virtual_entries;
 
-	pt = kmalloc(sizeof(struct metax_p2p_page_table), GFP_KERNEL);
+	pt = kzalloc(sizeof(*pt), GFP_KERNEL);
 	if (pt == NULL) {
 		phxfs_err("Failed to allocate page table\n");
 		return -ENOMEM;
@@ -85,11 +94,22 @@ static int metax_p2p_get_pages_p(uint64_t vaddr,
 	phxfs_info("metax_p2p_get_page_size: handle=%p, page_size=%u\n", pt->handle, page_size);
 	if (page_size == 0)
 		page_size = 1 << 16;
-	virtual_entries = length / page_size;
+	/*
+	 * Page accounting follows the ops-table page size (the core derives
+	 * nr_dev_pages / get_n_pages() from it); metax_p2p_dma_map_pages_p()
+	 * divides each sg by mpt->page_size, so any other value here makes the
+	 * entry counts disagree and registration fail with -ENOMEM. `data`
+	 * must NOT be used for this: it is the free_cb context and its type
+	 * differs per call site (struct p2p_vmap * on the registration path
+	 * vs struct phxfs_p2p_handle * on the exported path), so a cast reads
+	 * a foreign field layout.
+	 */
+	pt->page_size = metax_p2p_ops.page_size;
+	virtual_entries = DIV_ROUND_UP(length, pt->page_size);
 	pt->virtual_entries = virtual_entries;
+	pt->entries = virtual_entries;
     phxfs_info("metax_p2p_get_page_size: handle=%p, virtual_entries=%u\n", pt->handle, virtual_entries);
 
-	pt->page_size = ((struct p2p_vmap*)data)->page_size;
 	*page_table = pt;
 	return 0;
 }
@@ -155,6 +175,7 @@ static int metax_p2p_dma_map_pages_p(struct metax_p2p_page_table *page_table,
 	struct scatterlist *sg;
 	uint64_t *dma_addrs;
 	uint32_t entries = 0;
+	*dma_addresses = NULL;
 
 	if (page_table == NULL || page_table->sgt == NULL) {
 		return -EINVAL;
@@ -164,7 +185,7 @@ static int metax_p2p_dma_map_pages_p(struct metax_p2p_page_table *page_table,
 	phxfs_info("metax_p2p_get_bus_offset: handle=%p, offset=0x%llx\n",
 		 page_table->handle, offset);
 
-	dma_addrs = kmalloc(request_naddr * sizeof(uint64_t), GFP_KERNEL);
+	dma_addrs = kmalloc_array(request_naddr, sizeof(*dma_addrs), GFP_KERNEL);
 	if (dma_addrs == NULL) {
 		phxfs_err("Failed to allocate dma addresses array\n");
 		return -ENOMEM;
@@ -173,8 +194,12 @@ static int metax_p2p_dma_map_pages_p(struct metax_p2p_page_table *page_table,
 	for_each_sg(page_table->sgt->sgl, sg, page_table->sgt->nents, i) {
 		uint64_t addr = sg->dma_address;
 		uint32_t len = sg->length;
-		uint32_t pages = (len - offset) / request_page_size;
+		uint32_t pages = len / request_page_size;
 		uint32_t j;
+
+		if (len % request_page_size)
+			phxfs_warn("metax sg length %u is not page-size %u aligned\n",
+				   len, request_page_size);
 
 		for (j = 0; j < pages; j++) {
 			if (entries < request_naddr) {
@@ -184,10 +209,13 @@ static int metax_p2p_dma_map_pages_p(struct metax_p2p_page_table *page_table,
 				entries++;
 			}
 		}
+		if (entries == request_naddr)
+			break;
 	}
 
-    if (entries < request_naddr) {
+	if (entries < request_naddr) {
 		phxfs_err("Mem allocation not success: required page number %u, allocated page number %u\n", request_naddr, entries);
+		kfree(dma_addrs);
 		return -ENOMEM;
 	}
 
@@ -209,11 +237,14 @@ static int metax_get_phys_addrs(struct phxfs_page_table *pt,
 	int i, err;
 
 	err = metax_p2p_dma_map_pages_p(mpt, mpt->page_size, n_addrs, &dma_addrs);
+	if (err)
+		return err;
 	for (i = 0; i < n_addrs; i++) {
 		addrs[i] = dma_addrs[i];
 	}
+	kfree(dma_addrs);
 	mpt->entries = n_addrs;
-    return err;
+	return 0;
 }
 
 static int metax_p2p_free_page_table_p(struct metax_p2p_page_table *page_table)

@@ -4,10 +4,8 @@
 #include <linux/blk_types.h> 
 #include <linux/random.h> 
 #include <linux/file.h> 
-#include <linux/hash.h> 
 
 #include <linux/memory.h> 
-#include <linux/hashtable.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 
@@ -16,9 +14,115 @@
 #include "phxfs-backend.h"
 #include "config-host.h"
 
-static DEFINE_HASHTABLE(phxfs_io_mbuffer_hash, PHXFS_MAX_SHADOW_ALLOCS_ORDER); 
-static spinlock_t lock ____cacheline_aligned; 
-atomic_t base_index_cnt = ATOMIC_INIT(0);
+/* Refreshed from debugfs by the install/insmod Make targets in user space. */
+#define PHXFS_PAT_PATH "/run/phxfs/pat_memtype_list"
+#define PHXFS_PAT_BUF_SIZE (64 * 1024) /* PAT file typically < 16 KiB */
+
+/*
+ * Read the PAT memtype snapshot and extract conflict ranges that overlap
+ * with [bar_start, bar_start + bar_len).
+ * Returns number of conflicts found, or negative errno.
+ * conflicts array is allocated by caller with max_entries capacity.
+ */
+int phxfs_read_pat_conflicts(u64 bar_start, u64 bar_len,
+			     struct phxfs_pat_conflict *conflicts,
+			     int max_entries)
+{
+	struct file *filp;
+	loff_t pos = 0;
+	char *buf;
+	int ret, n_conflicts = 0;
+	u64 bar_end = bar_start + bar_len;
+
+	buf = kzalloc(PHXFS_PAT_BUF_SIZE, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	filp = filp_open(PHXFS_PAT_PATH, O_RDONLY, 0);
+	if (IS_ERR(filp)) {
+		phxfs_warn("phxfs: cannot open PAT snapshot %s (err=%ld); "
+		       "load the module with 'make insmod' to generate it; "
+		       "skipping PAT conflict detection\n",
+		       PHXFS_PAT_PATH, PTR_ERR(filp));
+		kfree(buf);
+		return 0; /* graceful: no conflicts detected */
+	}
+
+	ret = kernel_read(filp, buf, PHXFS_PAT_BUF_SIZE - 1, &pos);
+	filp_close(filp, NULL);
+
+	if (ret <= 0) {
+		phxfs_warn("phxfs: failed to read %s (ret=%d)\n",
+		       PHXFS_PAT_PATH, ret);
+		kfree(buf);
+		return 0;
+	}
+	buf[ret] = '\0';
+
+	/* Parse lines like: "write-combining @ 0x21a000800000-0x21a000900000" */
+	{
+		char *line = buf;
+		while (line && *line) {
+			char *nl = strchr(line, '\n');
+			u64 cs, ce;
+			char memtype[64] = {0};
+
+			if (nl)
+				*nl = '\0';
+
+			/* Skip write-back entries - they don't conflict with cached mapping */
+			if (strncmp(line, "write-back", 10) == 0 ||
+			    strncmp(line, "PAT", 3) == 0) {
+				line = nl ? nl + 1 : NULL;
+				continue;
+			}
+
+			/* Try to parse: <memtype> @ 0x<start>-0x<end> */
+			if (sscanf(line, "%63s @ 0x%llx-0x%llx", memtype, &cs, &ce) == 3) {
+				/* Check if this range overlaps with our BAR window */
+				if (cs < bar_end && ce > bar_start) {
+					/* Clip to BAR range */
+					u64 clipped_start = max(cs, bar_start);
+					u64 clipped_end = min(ce, bar_end);
+
+					if (n_conflicts < max_entries) {
+						conflicts[n_conflicts].start = clipped_start;
+						conflicts[n_conflicts].end = clipped_end;
+						n_conflicts++;
+					} else {
+						phxfs_warn("phxfs: too many PAT conflicts "
+						       "(>%d), some skipped\n", max_entries);
+						break;
+					}
+				}
+			}
+			line = nl ? nl + 1 : NULL;
+		}
+	}
+
+	kfree(buf);
+	return n_conflicts;
+}
+
+enum phxfs_callback_state {
+    PHXFS_CALLBACK_LIVE = 0,
+    PHXFS_CALLBACK_RUNNING,
+    PHXFS_CALLBACK_DROPPED,
+};
+
+static void p2p_vmap_put(struct p2p_vmap *map)
+{
+    if (refcount_dec_and_test(&map->refs))
+        kfree(map);
+}
+
+/* Drop the callback's map reference if no force-reclaim callback claimed it. */
+static void p2p_vmap_drop_callback_ref(struct p2p_vmap *map)
+{
+    if (atomic_cmpxchg(&map->callback_state, PHXFS_CALLBACK_LIVE,
+                       PHXFS_CALLBACK_DROPPED) == PHXFS_CALLBACK_LIVE)
+        p2p_vmap_put(map);
+}
 
 /*
  * Look up the virtual address for a BAR offset using multi-segment mapping.
@@ -65,78 +169,64 @@ void *phxfs_bar_offset_to_va(struct phxfs_dev *dev, u64 bar_offset)
 	return NULL;
 }
 
-void unmap_and_release(struct p2p_vmap* map)
-{
-    if (!map)
-        return;
-
-    if (map->release != NULL && map->data != NULL)
-    {
-        map->release(map);
-    }
-
-	if(map!=NULL)
-    {
-		kfree(map);
-        map = NULL;
-    }
-    phxfs_info("unmap_and_release\n");
-}
-
-
 void release_gpu_memory(struct p2p_vmap* map)
 {
     struct gpu_region* gd;
+    struct phxfs_page_table *pt;
+    bool owns_callback;
 
     if (!map)
         return;
 
-    gd = (struct gpu_region*) map->data;
-    if (gd != NULL)
-    {
-        if (gd->pt != NULL)
-        {
-            phxfs_p2p->put_pages(map->gpuvaddr, gd->pt);
+    /* Win callback ownership before calling put_pages(). If force reclaim is
+     * already running, that callback exclusively owns the vendor page table. */
+    owns_callback = atomic_cmpxchg(&map->callback_state, PHXFS_CALLBACK_LIVE,
+                                   PHXFS_CALLBACK_DROPPED) ==
+                    PHXFS_CALLBACK_LIVE;
+    if (owns_callback) {
+        gd = (struct gpu_region *)xchg(&map->data, NULL);
+        if (gd != NULL) {
+            pt = xchg(&gd->pt, NULL);
+            if (pt != NULL)
+                phxfs_p2p->put_pages(map->gpuvaddr, pt);
+            kfree(gd);
         }
-        kfree(gd);
-        map->data = NULL;
+        p2p_vmap_put(map);  /* registered reclaim callback */
     }
-	if(map!=NULL)
-    {
-		kfree(map);
-        map = NULL;
-    }
+    p2p_vmap_put(map);  /* VMA/registration owner */
 }
 
 static void force_release_gpu_memory(struct p2p_vmap* map)
 {
     struct gpu_region* gd;
+    struct phxfs_page_table *pt;
 
     if (WARN_ON(!map))
         return;
 
-    gd = (struct gpu_region*) map->data;
+    if (atomic_cmpxchg(&map->callback_state, PHXFS_CALLBACK_LIVE,
+                       PHXFS_CALLBACK_RUNNING) != PHXFS_CALLBACK_LIVE)
+        return;
+
+    gd = (struct gpu_region *)xchg(&map->data, NULL);
 
 
     if (gd != NULL)
     {
 
-        if (gd->pt != NULL)
-        {
-#ifndef CONFIG_PHXFS_VENDOR_METAX
-            phxfs_p2p->put_pages(map->gpuvaddr, gd->pt);
-#else
-            phxfs_p2p->free_page_table(gd->pt);
-#endif
-        }
+        pt = xchg(&gd->pt, NULL);
+        if (pt != NULL)
+            phxfs_p2p->free_page_table(pt);
 
         kfree(gd);
-        map->data = NULL;
 
         phxfs_warn("Device driver forcefully reclaimed %lu GPU pages\n", map->n_addrs);
     	
 	}
-	unmap_and_release(map);
+	/* The phony-buffer VMA still owns `map`. Keep the descriptor alive until
+	 * its ->close path; only the vendor page table was reclaimed here. */
+	atomic_set(&map->callback_state, PHXFS_CALLBACK_DROPPED);
+	p2p_vmap_put(map);  /* registered reclaim callback */
 }
 
 phxfs_mmap_buffer_t phxfs_check_and_bind_phony_buffer(u64 cpuvaddr, u64 length) { 
@@ -249,11 +339,9 @@ int phxfs_map_dev_addr_inner(phxfs_mmap_buffer_t mbuffer, u64 devaddr, u64 dev_l
         goto out;
     }
 
-    /*
-     * map descriptor scales as region/8192, only exceeds kmalloc above ~32GiB;
-     * kept on kmalloc so release_gpu_memory()'s kfree() path stays valid.
-     */
-    mbuffer->map = kmalloc(sizeof(struct p2p_vmap), GFP_KERNEL);
+    /* The descriptor contains fixed-size metadata; physical addresses live in
+     * mbuffer->dev_page_addrs, which is already allocated separately. */
+    mbuffer->map = kzalloc(sizeof(struct p2p_vmap), GFP_KERNEL);
     if (mbuffer->map == NULL)
     {
         phxfs_err("Failed to allocate mapping descriptor\n");
@@ -261,8 +349,9 @@ int phxfs_map_dev_addr_inner(phxfs_mmap_buffer_t mbuffer, u64 devaddr, u64 dev_l
         goto out;
     }
 
+    refcount_set(&mbuffer->map->refs, 2);
+    atomic_set(&mbuffer->map->callback_state, PHXFS_CALLBACK_LIVE);
     mbuffer->map->page_size = page_size;
-    mbuffer->map->release = release_gpu_memory;
     mbuffer->map->size = dev_len;
     mbuffer->map->gpuvaddr = devaddr;
     mbuffer->map->n_addrs = mbuffer->dev_page_num;
@@ -278,14 +367,14 @@ int phxfs_map_dev_addr_inner(phxfs_mmap_buffer_t mbuffer, u64 devaddr, u64 dev_l
     mbuffer->map->data = (void*)gd;
     ret = phxfs_p2p->get_pages(mbuffer->map->gpuvaddr, page_size * mbuffer->map->n_addrs, &gd->pt, 
         (void (*)(void*)) force_release_gpu_memory, mbuffer->map);
+    if (gd->pt != NULL)
+        pages_pinned = true;
     if (ret != 0 || gd->pt == NULL) {
         phxfs_err("phxfs_p2p->get_pages failed, ret=%d\n", ret);
         if (ret == 0)
             ret = -ENOMEM;
         goto out;
     }
-    pages_pinned = true;
-
     ret = phxfs_p2p->get_phys_addrs(gd->pt, dev_page_addrs, mbuffer->map->n_addrs);
     if (ret) {
         phxfs_err("get_phys_addrs failed, ret=%d\n", ret);
@@ -369,19 +458,19 @@ out:
      * registration above ~2GiB failed (ppages kmalloc returned NULL and the
      * unchecked get_pages / out: path freed the still-referenced map & gd).
      */
-    if (pages_pinned && gd != NULL && gd->pt != NULL) {
-        phxfs_p2p->put_pages(devaddr, gd->pt);
-        gd->pt = NULL;
-    }
-    if (gd != NULL) {
-        kfree(gd);
-        gd = NULL;
-        if (mbuffer->map != NULL)
-            mbuffer->map->data = NULL;
-    }
     if (mbuffer->map != NULL) {
-        kfree(mbuffer->map);
+        if (pages_pinned) {
+            release_gpu_memory(mbuffer->map);
+        } else {
+            struct gpu_region *owned;
+
+            owned = (struct gpu_region *)xchg(&mbuffer->map->data, NULL);
+            kfree(owned);
+            p2p_vmap_drop_callback_ref(mbuffer->map);
+            p2p_vmap_put(mbuffer->map);
+        }
         mbuffer->map = NULL;
+        gd = NULL;
     }
     if (mbuffer->ppages != NULL) {
         kvfree(mbuffer->ppages);
@@ -445,10 +534,6 @@ static void phxfs_mbuffer_free(phxfs_mmap_buffer_t mbuffer) {
     if (WARN_ON(!mbuffer))
         return;
 
-    spin_lock(&lock);
-    hash_del_rcu(&mbuffer->hash_link);
-    spin_unlock(&lock);
-
     /* Normally already done by PHXFS_IOCTL_UNMAP; this covers a process that
      * died without unmapping. */
     phxfs_mbuffer_unpin(mbuffer);
@@ -474,14 +559,7 @@ static void phxfs_mbuffer_free(phxfs_mmap_buffer_t mbuffer) {
 
     mbuffer->dev = NULL;
     mbuffer->vma = NULL;
-    mbuffer->base_index = 0;
 }
-
-void phxfs_mbuffer_init(void) {
-    spin_lock_init(&lock);
-    hash_init(phxfs_io_mbuffer_hash);
-}
-
 
 void phxfs_mbuffer_get_ref(phxfs_mmap_buffer_t mbuffer) {
     if (WARN_ON(!mbuffer))
@@ -508,40 +586,11 @@ void phxfs_mbuffer_put(phxfs_mmap_buffer_t mbuffer) {
     return phxfs_mbuffer_put_internal(mbuffer);
 }
 
-void phxfs_mbuffer_put_dma(phxfs_mmap_buffer_t mbuffer) {
-    return phxfs_mbuffer_put_internal(mbuffer);
-}
-
-// 代码段开始
-
-// 获取未加锁的phony缓冲区
-static inline phxfs_mmap_buffer_t phxfs_mbuffer_get_unlocked(unsigned long base_index) {
-    phxfs_mmap_buffer_t phxfs_mbuffer;
-    hash_for_each_possible_rcu(phxfs_io_mbuffer_hash, phxfs_mbuffer, hash_link, base_index) {
-        if (phxfs_mbuffer->base_index == base_index) {
-            phxfs_mbuffer_get_ref(phxfs_mbuffer);
-            return phxfs_mbuffer;
-        }
-    }
-    // printk("base_index %lx not found \n", base_index);
-    return NULL;
-}
-
-// 获取phony缓冲区
-phxfs_mmap_buffer_t phxfs_mbuffer_get(unsigned long base_index) {
-    phxfs_mmap_buffer_t phxfs_mbuffer;
-    rcu_read_lock();
-        phxfs_mbuffer = phxfs_mbuffer_get_unlocked(base_index);
-    rcu_read_unlock();
-    return phxfs_mbuffer;
-}
-
 int phxfs_add_phony_buffer(struct file *filp, struct vm_area_struct *vma) {
     u64 buffer_len;
-    int ret = -EINVAL, tries = 10;
-    unsigned long base_index;
+    int ret = -EINVAL;
     struct phxfs_dev *dev;
-    phxfs_mmap_buffer_t phxfs_mbuffer, phxfs_new_mbuffer;
+    phxfs_mmap_buffer_t phxfs_mbuffer;
 
     if (WARN_ON(!filp || !vma))
         return -EINVAL;
@@ -552,45 +601,19 @@ int phxfs_add_phony_buffer(struct file *filp, struct vm_area_struct *vma) {
     if (dev == NULL)
         goto error;
 
-    // if the length is smaller than dev page, check for alignment
-    if (buffer_len < phxfs_p2p->page_size && (buffer_len % phxfs_p2p->page_size)) {
-        // printk("mmap size not a multiple of 64k: 0x%llx for size >64k \n", buffer_len);
-    }
-
-    phxfs_new_mbuffer = (phxfs_mmap_buffer_t)kzalloc(sizeof(struct phxfs_mmap_buffer), GFP_KERNEL);
-    if (!phxfs_new_mbuffer) {
+    phxfs_mbuffer = (phxfs_mmap_buffer_t)kzalloc(sizeof(struct phxfs_mmap_buffer), GFP_KERNEL);
+    if (!phxfs_mbuffer) {
         ret = -ENOMEM;
         goto error;
     }
 
-    spin_lock(&lock);
-    tries = 10;
-    do {
-        base_index = PHXFS_MIN_BASE_INDEX + atomic_inc_return(&base_index_cnt);
-        phxfs_new_mbuffer->base_index = base_index;
-        atomic_set(&phxfs_new_mbuffer->ref, 1);
-        hash_add_rcu(phxfs_io_mbuffer_hash, &phxfs_new_mbuffer->hash_link, base_index);
-        phxfs_mbuffer = phxfs_new_mbuffer;
-        phxfs_new_mbuffer = NULL;
-        break;
-        // }
-    } while (tries);
-    spin_unlock(&lock);
-
-    if (phxfs_new_mbuffer != NULL) {
-        kfree(phxfs_new_mbuffer);
-        ret = -ENOMEM;
-        goto error;
-    }
-
-    if (vma->vm_private_data == NULL) {
-        vma->vm_private_data = (void *)phxfs_mbuffer;
-    } else {
-       
+    if (vma->vm_private_data != NULL) {
         phxfs_warn("vma->vm_private_data!=NULL\n");
+        kfree(phxfs_mbuffer);
         goto error;
     }
 
+    atomic_set(&phxfs_mbuffer->ref, 1);
     phxfs_mbuffer->vma = vma;
     phxfs_mbuffer->dev = dev;
     phxfs_mbuffer->dev_id = dev->idx;
@@ -598,6 +621,8 @@ int phxfs_add_phony_buffer(struct file *filp, struct vm_area_struct *vma) {
     phxfs_mbuffer->map_len = buffer_len;
     phxfs_mbuffer->remap = 0;
     phxfs_mbuffer->staging_span = 0;
+
+    vma->vm_private_data = (void *)phxfs_mbuffer;
 
     return 0;
 
