@@ -891,7 +891,7 @@ static int phxfs_ctrl_init(struct phxfs_ctrl *dev_ctrl, u32 dev_num) {
 		dev_ctrl->phx_dev[i].bus_offset = 0;
 		dev_ctrl->phx_dev[i].p2p_slice_start = 0;
 		dev_ctrl->phx_dev[i].p2p_slice_size = 0;
-		// for (j = 0; j < PCI_STD_NUM_BARS; j++) {
+
 		for (j = 0; j <= PCI_STD_RESOURCE_END; j++) {
 			struct pci_dev *pdev = dev_ctrl->phx_dev[i].dev;
 
@@ -1168,98 +1168,59 @@ unregister_generic_phxfs:
 	return ret;
 }
 
-static void phxfs_discover_devices(void)
+/*
+ * Scan one PCI class for devices of the compiled-in vendor and record them
+ * in gpu_info_table. Each call restarts from the head of the global PCI
+ * device list, so the order in which phxfs_discover_devices() issues the
+ * scans determines the final table order.
+ */
+static void phxfs_scan_pci_class(unsigned int class)
 {
 	struct pci_dev *pdev = NULL;
 
+	while ((pdev = pci_get_class(class, pdev)) != NULL) {
+		if (pdev->vendor != PHXFS_PCI_VENDOR_ID || !pdev->bus)
+			continue;
+		if (phxfs_numa_node >= 0 &&
+		    pcibus_to_node(pdev->bus) != phxfs_numa_node) {
+			phxfs_info("phxfs: skip GPU %04x:%02x:%02x.%d (numa mismatch)\n",
+				   pci_domain_nr(pdev->bus), pdev->bus->number,
+				   PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
+			continue;
+		}
+		if (npu_num >= MAX_GPU_DEVS) {
+			pci_dev_put(pdev); /* pci_get_class() left us a reference */
+			break;
+		}
+		gpu_info_table[npu_num] =
+			((uint64_t)pci_domain_nr(pdev->bus) << 32) |
+			PCI_DEVID(pdev->bus->number, pdev->devfn);
+		phxfs_info("phxfs: found GPU %04x:%02x:%02x.%d (index=%u)\n",
+			   pci_domain_nr(pdev->bus), pdev->bus->number,
+			   PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn), npu_num);
+		npu_num++;
+	}
+}
+
+static void phxfs_discover_devices(void)
+{
 	memset(gpu_info_table, 0, sizeof(gpu_info_table));
 	npu_num = 0;
-#ifndef CONFIG_PHXFS_VENDOR_METAX
+
+#ifdef CONFIG_PHXFS_VENDOR_METAX
+	/* Scan METAX display controllers */
+	phxfs_scan_pci_class(PCI_CLASS_DISPLAY << 8);
+#else
 #ifdef PHXFS_PCI_ACCEL_CLASS
 	/* Scan processing accelerators (AMD MI300/MI308X are class 0x1200,
 	 * not display controllers — the scans below would miss them). */
-	while ((pdev = pci_get_class(PHXFS_PCI_ACCEL_CLASS << 8, pdev)) != NULL) {
-		if (pdev->vendor != PHXFS_PCI_VENDOR_ID || !pdev->bus)
-			continue;
-		if (phxfs_numa_node >= 0 &&
-		    pcibus_to_node(pdev->bus) != phxfs_numa_node) {
-			phxfs_info("phxfs: skip GPU %04x:%02x:%02x.%d (numa mismatch)\n",
-				   pci_domain_nr(pdev->bus), pdev->bus->number,
-				   PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
-			continue;
-		}
-		if (npu_num >= MAX_GPU_DEVS)
-			break;
-		gpu_info_table[npu_num] =
-			((uint64_t)pci_domain_nr(pdev->bus) << 32) |
-			PCI_DEVID(pdev->bus->number, pdev->devfn);
-		phxfs_info("phxfs: found GPU %04x:%02x:%02x.%d (index=%u)\n",
-			   pci_domain_nr(pdev->bus), pdev->bus->number,
-			   PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn), npu_num);
-		npu_num++;
-	}
+	phxfs_scan_pci_class(PHXFS_PCI_ACCEL_CLASS << 8);
 #endif
 	/* Scan 3D display controllers */
-	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_3D << 8, pdev)) != NULL) {
-		if (pdev->vendor != PHXFS_PCI_VENDOR_ID || !pdev->bus)
-			continue;
-		if (phxfs_numa_node >= 0 &&
-		    pcibus_to_node(pdev->bus) != phxfs_numa_node) {
-			phxfs_info("phxfs: skip GPU %04x:%02x:%02x.%d (numa mismatch)\n",
-				   pci_domain_nr(pdev->bus), pdev->bus->number,
-				   PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
-			continue;
-		}
-		if (npu_num >= MAX_GPU_DEVS)
-			break;
-		gpu_info_table[npu_num] =
-			((uint64_t)pci_domain_nr(pdev->bus) << 32) |
-			PCI_DEVID(pdev->bus->number, pdev->devfn);
-		phxfs_info("phxfs: found GPU %04x:%02x:%02x.%d (index=%u)\n",
-			   pci_domain_nr(pdev->bus), pdev->bus->number,
-			   PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn), npu_num);
-		npu_num++;
-	}
+	phxfs_scan_pci_class(PCI_CLASS_DISPLAY_3D << 8);
 
 	/* Scan VGA display controllers */
-	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_VGA << 8, pdev)) != NULL) {
-		if (pdev->vendor != PHXFS_PCI_VENDOR_ID || !pdev->bus)
-			continue;
-		if (phxfs_numa_node >= 0 &&
-		    pcibus_to_node(pdev->bus) != phxfs_numa_node)
-			continue;
-		if (npu_num >= MAX_GPU_DEVS)
-			break;
-		gpu_info_table[npu_num] =
-			((uint64_t)pci_domain_nr(pdev->bus) << 32) |
-			PCI_DEVID(pdev->bus->number, pdev->devfn);
-		phxfs_info("phxfs: found GPU %04x:%02x:%02x.%d (index=%u)\n",
-			   pci_domain_nr(pdev->bus), pdev->bus->number,
-			   PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn), npu_num);
-		npu_num++;
-	}
-#else
-	/* Scan METAX display controllers */
-	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY << 8, pdev)) != NULL) {
-		if (pdev->vendor != PHXFS_PCI_VENDOR_ID || !pdev->bus)
-			continue;
-		if (phxfs_numa_node >= 0 &&
-		    pcibus_to_node(pdev->bus) != phxfs_numa_node) {
-			phxfs_info("phxfs: skip GPU %04x:%02x:%02x.%d (numa mismatch)\n",
-				   pci_domain_nr(pdev->bus), pdev->bus->number,
-				   PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
-			continue;
-		}
-		if (npu_num >= MAX_GPU_DEVS)
-			break;
-		gpu_info_table[npu_num] =
-			((uint64_t)pci_domain_nr(pdev->bus) << 32) |
-			PCI_DEVID(pdev->bus->number, pdev->devfn);
-		phxfs_info("phxfs: found GPU %04x:%02x:%02x.%d (index=%u)\n",
-			   pci_domain_nr(pdev->bus), pdev->bus->number,
-			   PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn), npu_num);
-		npu_num++;
-	}
+	phxfs_scan_pci_class(PCI_CLASS_DISPLAY_VGA << 8);
 #endif
 }
 
