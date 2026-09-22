@@ -18,7 +18,6 @@ On `insmod`, `phxfs_init` performs:
 2. Discover accelerator devices by PCI vendor ID and build the device table (`phxfs_discover_devices`, populates `gpu_info_table`, `npu_num`).
 3. For each device, discover its PCIe BAR and `devm_memremap` the BAR into kernel space (`phxfs_ctrl_init`).
 4. Create a character device per device (`phxfs_cdev_init`).
-5. Initialize the hash table that tracks registered device memory regions (`phxfs_mbuffer_init`).
 
 ## Uninitialization
 
@@ -32,7 +31,7 @@ Three base operations are exposed to user space:
 Saves the device metadata for `deviceID` into `file->private_data`.
 
 ### `mmap`
-Sets VMA flags (`VM_MIXEDMAP`, non-cached) and registers the VMA in the hash table via `phxfs_add_phony_buffer`. The mapping is lazy — it does not pin GPU memory yet.
+Sets VMA flags (`VM_MIXEDMAP`, non-cached) and creates the buffer descriptor owned by the VMA via `phxfs_add_phony_buffer`. The mapping is lazy — it does not pin GPU memory yet.
 
 ### `ioctl`
 - `PHXFS_IOCTL_MAP`: map a device (GPU) address into the user-space VMA. Internally `phxfs_map_dev_addr` → `phxfs_map_dev_addr_inner` calls `phxfs_p2p->get_pages()` (vendor backend) to pin device pages, then `vm_insert_page` to insert them into the VMA.

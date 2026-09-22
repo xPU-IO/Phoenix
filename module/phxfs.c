@@ -35,14 +35,9 @@
 static DEFINE_IDA(phxfs_chr_minor_ida);
 static dev_t phxfs_chr_devt;
 static struct class *phxfs_chr_class;
-struct device phxfs_chr_dev_device;
-struct cdev phxfs_chr_dev;
-
-#define PHXFS_MINORS 1
 
 struct phxfs_ctrl ctrl;
 
-#define NUM_THREADS 128
 u32 npu_num;
 uint64_t gpu_info_table[MAX_GPU_DEVS];
 
@@ -62,110 +57,12 @@ MODULE_PARM_DESC(phxfs_map_mode,
 	"register it) [default], 0=full BAR remap at load (direct SSD->GPU DMA; "
 	"opt-in via cmake -DPHXFS_MAP_MODE=full or phxfs_map_mode=0)");
 
-int phxfs_staging_release = 1;
-module_param(phxfs_staging_release, int, 0644);
-MODULE_PARM_DESC(phxfs_staging_release,
-	"Staging mode: unmap a BAR unit once no registration references it "
-	"(1=on [default], 0=keep every unit mapped until module unload)");
-
-/* Refreshed from debugfs by the install/insmod Make targets in user space. */
-#define PHXFS_PAT_PATH "/run/phxfs/pat_memtype_list"
-#define PHXFS_PAT_BUF_SIZE (64 * 1024) /* PAT file typically < 16 KiB */
-
-/*
- * Read the PAT memtype snapshot and extract conflict ranges that overlap
- * with [bar_start, bar_start + bar_len).
- * Returns number of conflicts found, or negative errno.
- * conflicts array is allocated by caller with max_entries capacity.
- */
-int phxfs_read_pat_conflicts(u64 bar_start, u64 bar_len,
-			     struct phxfs_pat_conflict *conflicts,
-			     int max_entries)
-{
-	struct file *filp;
-	loff_t pos = 0;
-	char *buf;
-	int ret, n_conflicts = 0;
-	u64 bar_end = bar_start + bar_len;
-
-	buf = kzalloc(PHXFS_PAT_BUF_SIZE, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	filp = filp_open(PHXFS_PAT_PATH, O_RDONLY, 0);
-	if (IS_ERR(filp)) {
-		phxfs_warn("phxfs: cannot open PAT snapshot %s (err=%ld); "
-		       "load the module with 'make insmod' to generate it; "
-		       "skipping PAT conflict detection\n",
-		       PHXFS_PAT_PATH, PTR_ERR(filp));
-		kfree(buf);
-		return 0; /* graceful: no conflicts detected */
-	}
-
-	ret = kernel_read(filp, buf, PHXFS_PAT_BUF_SIZE - 1, &pos);
-	filp_close(filp, NULL);
-
-	if (ret <= 0) {
-		phxfs_warn("phxfs: failed to read %s (ret=%d)\n",
-		       PHXFS_PAT_PATH, ret);
-		kfree(buf);
-		return 0;
-	}
-	buf[ret] = '\0';
-
-	/* Parse lines like: "write-combining @ 0x21a000800000-0x21a000900000" */
-	{
-		char *line = buf;
-		while (line && *line) {
-			char *nl = strchr(line, '\n');
-			u64 cs, ce;
-			char memtype[64] = {0};
-
-			if (nl)
-				*nl = '\0';
-
-			/* Skip write-back entries - they don't conflict with cached mapping */
-			if (strncmp(line, "write-back", 10) == 0 ||
-			    strncmp(line, "PAT", 3) == 0) {
-				line = nl ? nl + 1 : NULL;
-				continue;
-			}
-
-			/* Try to parse: <memtype> @ 0x<start>-0x<end> */
-			if (sscanf(line, "%63s @ 0x%llx-0x%llx", memtype, &cs, &ce) == 3) {
-				/* Check if this range overlaps with our BAR window */
-				if (cs < bar_end && ce > bar_start) {
-					/* Clip to BAR range */
-					u64 clipped_start = max(cs, bar_start);
-					u64 clipped_end = min(ce, bar_end);
-
-					if (n_conflicts < max_entries) {
-						conflicts[n_conflicts].start = clipped_start;
-						conflicts[n_conflicts].end = clipped_end;
-						n_conflicts++;
-					} else {
-						phxfs_warn("phxfs: too many PAT conflicts "
-						       "(>%d), some skipped\n", max_entries);
-						break;
-					}
-				}
-			}
-			line = nl ? nl + 1 : NULL;
-		}
-	}
-
-	kfree(buf);
-	return n_conflicts;
-}
-
 /*
  * Compute which REMAP_UNIT_SIZE-aligned blocks within the HBM region are free of
  * PAT conflicts, then merge adjacent free blocks into segments.
  *
  * Strategy:
- *   - Reserve [paddr, paddr + PHXFS_RESERVED_SIZE) at the head
- *   - Reserve [paddr + hbm_size - PHXFS_RESERVED_SIZE, paddr + hbm_size) at the tail
- *   - Divide the middle region into REMAP_UNIT_SIZE blocks
+ *   - Divide the BAR into REMAP_UNIT_SIZE blocks
  *   - Mark blocks that overlap any PAT conflict as "skip"
  *   - Merge consecutive non-skip blocks into segments
  *
@@ -177,7 +74,6 @@ static int phxfs_compute_bar_segments(
 	struct phxfs_pat_conflict *conflicts, int n_conflicts,
 	struct phxfs_bar_segment **out_segments)
 {
-	u64 usable_start, usable_end, region_size;
 	int n_blocks, i, s;
 	int n_segments = 0;
 	bool *block_skip; /* true = has PAT conflict, skip this block */
@@ -187,17 +83,7 @@ static int phxfs_compute_bar_segments(
 		return -EINVAL;
 	}
 
-	usable_start = paddr + PHXFS_RESERVED_SIZE;
-	usable_end = paddr + hbm_size - PHXFS_RESERVED_SIZE;
-
-	if (usable_end <= usable_start) {
-		phxfs_warn("phxfs: HBM too small for head/tail reservation "
-		       "(hbm_size=%llu MiB)\n", hbm_size / (1024 * 1024));
-		return -ENOSPC;
-	}
-
-	region_size = usable_end - usable_start;
-	n_blocks = (int)(region_size / PHXFS_REMAP_UNIT_SIZE);
+	n_blocks = (int)(hbm_size / PHXFS_REMAP_UNIT_SIZE);
 	if (n_blocks <= 0)
 		return -ENOSPC;
 
@@ -207,7 +93,7 @@ static int phxfs_compute_bar_segments(
 
 	/* Mark blocks that overlap with any PAT conflict */
 	for (i = 0; i < n_blocks; i++) {
-		u64 blk_start = usable_start + (u64)i * PHXFS_REMAP_UNIT_SIZE;
+		u64 blk_start = paddr + (u64)i * PHXFS_REMAP_UNIT_SIZE;
 		u64 blk_end = blk_start + PHXFS_REMAP_UNIT_SIZE;
 		int c;
 
@@ -247,7 +133,7 @@ static int phxfs_compute_bar_segments(
 	s = 0;
 	for (i = 0; i < n_blocks && s < n_segments; ) {
 		if (!block_skip[i]) {
-			u64 seg_start = usable_start + (u64)i * PHXFS_REMAP_UNIT_SIZE;
+			u64 seg_start = paddr + (u64)i * PHXFS_REMAP_UNIT_SIZE;
 			int run_len = 0;
 
 			while (i < n_blocks && !block_skip[i]) {
@@ -311,11 +197,11 @@ static int phxfs_devm_memremap(struct phxfs_dev *phx_dev) {
 	phxfs_info("phxfs%d: BAR size=%llu MiB, paddr=0x%llx\n",
 	       phx_dev->idx, phx_dev->size / (1024 * 1024), phx_dev->paddr);
 
-	/* Max blocks = usable region / unit size, used as upper bound for conflicts */
+	/* Max blocks = BAR size / unit size, used as upper bound for conflicts */
 	{
-		int max_blocks = (int)((phx_dev->size - 2 * PHXFS_RESERVED_SIZE) / PHXFS_REMAP_UNIT_SIZE);
+		int max_blocks = (int)(phx_dev->size / PHXFS_REMAP_UNIT_SIZE);
 		if (max_blocks <= 0) {
-			phxfs_warn("phxfs%d: BAR too small for head/tail reservation\n",
+			phxfs_warn("phxfs%d: BAR too small to remap\n",
 			       phx_dev->idx);
 			return -ENOSPC;
 		}
@@ -330,14 +216,11 @@ static int phxfs_devm_memremap(struct phxfs_dev *phx_dev) {
 
 		/*
 		 * The p2pdma bootstrap slice is already claimed by its own
-		 * pgmap, so no segment may cover it. Only possible when the
-		 * slice reaches past the head reservation that the segment
-		 * builder starts from; a slice inside that reservation can never
-		 * overlap a candidate block, so injecting it would be a no-op.
+		 * pgmap, so no segment may cover it. The slice is drawn from
+		 * the remappable region, so the segment builder must always
+		 * route around it.
 		 */
 		if (n_conflicts >= 0 && phx_dev->p2p_slice_size &&
-		    phx_dev->p2p_slice_start + phx_dev->p2p_slice_size >
-			    phx_dev->paddr + PHXFS_RESERVED_SIZE &&
 		    n_conflicts < max_blocks) {
 			conflicts[n_conflicts].start = phx_dev->p2p_slice_start;
 			conflicts[n_conflicts].end = phx_dev->p2p_slice_start +
@@ -921,7 +804,7 @@ void phxfs_staging_put_span(struct phxfs_dev *dev, u64 span_start)
 	else if (--dev->segments[idx].refcount == 0)
 		freed = true;
 
-	if (freed && phxfs_staging_release) {
+	if (freed) {
 		dev->seg_release_tries = 25;   /* ~5 s of retries, then give up */
 		schedule_delayed_work(&dev->seg_release_work, 0);
 	}
@@ -1410,7 +1293,6 @@ static int __init phxfs_init(void) {
 		ctrl.dev_num = 0;
 		goto err_backend;
 	}
-	phxfs_mbuffer_init();
 	return 0;
 
 err_backend:

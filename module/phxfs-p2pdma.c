@@ -25,6 +25,8 @@
  * which is why phxfs_p2pdma_setup() is a no-op there.
  */
 
+#include <linux/vmalloc.h>
+
 #include "phxfs.h"
 
 #ifdef CONFIG_PCI_P2PDMA
@@ -103,19 +105,17 @@ static int phxfs_p2pdma_bootstrap(struct phxfs_dev *phx_dev)
 	}
 
 	/*
-	 * Prefer the head reservation: the segment builder never remaps it, so a
-	 * slice there cannot collide with our own segments. A vendor without a
-	 * reservation (PHXFS_RESERVED_SIZE == 0) has to draw the slice from the
-	 * remappable region instead, and phxfs_devm_memremap() then routes the
-	 * segment builder around it.
+	 * The slice is drawn from the whole BAR as the first PHXFS_REMAP_ALIGN
+	 * block no PAT conflict overlaps; phxfs_devm_memremap() injects it into
+	 * the conflict list so the segment builder routes around it.
 	 */
 	span_start = phx_dev->paddr;
-	span_len = PHXFS_RESERVED_SIZE ? PHXFS_RESERVED_SIZE : phx_dev->size;
+	span_len = phx_dev->size;
 	if (span_len < PHXFS_REMAP_ALIGN)
 		return -ENOSPC;
 
 	n_blocks = (int)(span_len / PHXFS_REMAP_ALIGN);
-	conflicts = kcalloc(n_blocks, sizeof(*conflicts), GFP_KERNEL);
+	conflicts = kvcalloc(n_blocks, sizeof(*conflicts), GFP_KERNEL);
 	if (!conflicts)
 		return -ENOMEM;
 
@@ -166,7 +166,7 @@ static int phxfs_p2pdma_bootstrap(struct phxfs_dev *phx_dev)
 	       phx_dev->idx, slice, (u64)PHXFS_REMAP_ALIGN);
 	ret = 0;
 out:
-	kfree(conflicts);
+	kvfree(conflicts);
 	return ret;
 }
 

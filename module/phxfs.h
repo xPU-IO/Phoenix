@@ -59,11 +59,6 @@ extern int phxfs_debug;
  * remap exactly the pool's span -- nothing more.
  */
 #define PHXFS_REMAP_ALIGN      ((u64)PAGES_PER_SUBSECTION << PAGE_SHIFT)
-#ifndef CONFIG_PHXFS_VENDOR_METAX
-#define PHXFS_RESERVED_SIZE    ((u64)128 * 1024 * 1024)  /* 128 MiB reserved at head/tail */
-#else
-#define PHXFS_RESERVED_SIZE    0
-#endif
 
 /*
  * A BAR range that some other mapping already holds a non-write-back memtype
@@ -248,9 +243,7 @@ struct p2p_vmap {
     refcount_t   refs;            /* VMA owner + registered reclaim callback */
     atomic_t     callback_state;  /* live/running/dropped; see phxfs-mem.c */
     u64          gpuvaddr;
-    u64          gpupaddr;
     u64          size;
-    u64          cpuvaddr;
     unsigned long page_size;
     void        *data;           /* points to struct gpu_region */
     unsigned long n_addrs;
@@ -270,29 +263,6 @@ struct phxfs_ioctl_map_s {
     u32 sbuf_block;
 } __attribute__((packed, aligned(8)));
 typedef struct phxfs_ioctl_map_s phxfs_ioctl_map_t;
-
-struct phxfs_ioctl_io_s {
-    u64 cpuvaddr; /* cpu vaddr */
-    loff_t offset; /* file offset */
-    u64 size; /* Read/Write length */
-    u64 end_fence_value; /* End fence value for DMA completion */
-    s64 ioctl_return;
-    int fd; /* File descriptor */
-} __attribute__((packed, aligned(8)));
-typedef struct phxfs_ioctl_io_s phxfs_ioctl_io_t;
-
-struct phxfs_ioctl_ret_s {
-    s64 ret;
-    u8 padding[40];
-} __attribute__((packed, aligned(8)));
-typedef struct phxfs_ioctl_ret_s phxfs_ioctl_ret_t;
-
-union phxfs_ioctl_para_s {
-    struct phxfs_ioctl_map_s map_param;
-    struct phxfs_ioctl_io_s io_para;
-    struct phxfs_ioctl_ret_s ret;
-} __attribute__((packed, aligned(8)));
-typedef union phxfs_ioctl_para_s phxfs_ioctl_para_t;
 
 
 #define PHXFS_IOCTL 0x88 /* 0x4c */
