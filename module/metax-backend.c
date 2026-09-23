@@ -94,6 +94,12 @@ static int metax_p2p_get_pages_p(uint64_t vaddr,
 	phxfs_info("metax_p2p_get_page_size: handle=%p, page_size=%u\n", pt->handle, page_size);
 	if (page_size == 0)
 		page_size = 1 << 16;
+	/* Diagnostic only: entry count at the driver-reported page granularity.
+	 * Nothing consumes virtual_entries; the authoritative accounting below
+	 * follows the ops-table page size. */
+	virtual_entries = DIV_ROUND_UP(length, page_size);
+	pt->virtual_entries = virtual_entries;
+	phxfs_info("metax_p2p_get_page_size: handle=%p, virtual_entries=%u\n", pt->handle, virtual_entries);
 	/*
 	 * Page accounting follows the ops-table page size (the core derives
 	 * nr_dev_pages / get_n_pages() from it); metax_p2p_dma_map_pages_p()
@@ -103,12 +109,15 @@ static int metax_p2p_get_pages_p(uint64_t vaddr,
 	 * differs per call site (struct p2p_vmap * on the registration path
 	 * vs struct phxfs_p2p_handle * on the exported path), so a cast reads
 	 * a foreign field layout.
+	 *
+	 * entries MUST be initialised here: the exported phxfs_p2p_register()
+	 * path calls get_n_pages() (which returns mpt->entries) to size its
+	 * address array BEFORE calling get_phys_addrs() (phxfs-backend.h
+	 * contract: "capacity >= get_n_pages()"). Leaving entries 0 until
+	 * get_phys_addrs() would hand the caller a zero-length registration.
 	 */
 	pt->page_size = metax_p2p_ops.page_size;
-	virtual_entries = DIV_ROUND_UP(length, pt->page_size);
-	pt->virtual_entries = virtual_entries;
-	pt->entries = virtual_entries;
-    phxfs_info("metax_p2p_get_page_size: handle=%p, virtual_entries=%u\n", pt->handle, virtual_entries);
+	pt->entries = DIV_ROUND_UP(length, pt->page_size);
 
 	*page_table = pt;
 	return 0;
