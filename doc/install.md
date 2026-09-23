@@ -123,7 +123,9 @@ sudo make install
 
 This installs (copies) the kernel module; it does **not** load it. If the module install fails
 (e.g. the running kernel has no writable module tree), `make install` prints the reason and
-still installs the library.
+still installs the library. Although `make install` re-invokes the build, the module build is
+incremental — unchanged sources (and an unchanged kernel configuration probe) are not
+recompiled.
 
 It also refreshes the root-only PAT memtype snapshot at `/run/phxfs/pat_memtype_list` when debugfs is available.
 
