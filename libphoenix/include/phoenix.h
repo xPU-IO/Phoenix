@@ -137,9 +137,12 @@ int phxfs_write_batch(phxfs_io_req_t *reqs, int n);
  * phxfs_batch_wait() to block for completion and get per-request results.
  * Enables compute/I/O overlap.
  *
- * Submitted batches queue up (bounded capacity) and each runs with the
- * pool's full worker set in turn — so pipelining several submits (e.g. to
- * prefetch ahead) is supported without waiting for the previous one first.
+ * Submitted batches queue up (bounded capacity), so pipelining several
+ * submits (e.g. to prefetch ahead) is supported without waiting for the
+ * previous one first. The pool's workers service live batches
+ * round-robin: there is NO ordering between independent batches — a read
+ * submitted after a write to the same range may observe the pre-write
+ * state. Sequence dependent I/O with phxfs_batch_wait().
  * If the queue is full, submit fails immediately (non-blocking) with NULL
  * and errno == EBUSY rather than waiting for space.
  *

@@ -134,10 +134,18 @@ int main() {
               "read data[%d] matches", i);
     }
 
-    /* Pipelining: two batches submitted without waiting in between; the
-     * pool services them in FIFO order, so the read observes the write. */
+    /* Pipelining: two batches submitted without waiting in between are both
+     * queued and each completes with its own results. The pool deliberately
+     * gives NO ordering between independent batches (workers service live
+     * jobs round-robin, see io_pool.cpp), so the read targets a region
+     * seeded synchronously beforehand and the pipelined write goes to a
+     * disjoint region verified afterwards. */
     std::vector<uint8_t> pipe_src(kPrefix + 512 + 16, 0);
     fill_pattern(pipe_src, 11, 512);
+    std::vector<uint8_t> pipe_seed(kPrefix + 512 + 16, 0);
+    fill_pattern(pipe_seed, 12, 512);
+    CHECK(pwrite(fd, pipe_seed.data() + kPrefix, 512, kPipeOffset) == 512,
+          "seed pipelined-read region");
     std::vector<uint8_t> pipe_dst(512, 0);
     phxfs_io_req_t pipe_write = {};
     pipe_write.fd = fd;
@@ -145,19 +153,30 @@ int main() {
     pipe_write.buf = pipe_src.data();
     pipe_write.buf_offset = kPrefix;
     pipe_write.nbytes = 512;
-    pipe_write.f_offset = kPipeOffset;
+    pipe_write.f_offset = kPipeOffset + 4096;
     pipe_write.result = -1;
-    phxfs_io_req_t pipe_read = pipe_write;
+    phxfs_io_req_t pipe_read = {};
+    pipe_read.fd = fd;
+    pipe_read.device_id = -1;
     pipe_read.buf = pipe_dst.data();
     pipe_read.buf_offset = 0;
+    pipe_read.nbytes = 512;
+    pipe_read.f_offset = kPipeOffset;
+    pipe_read.result = -1;
 
     phxfs_batch_t *hw = phxfs_batch_submit_write(&pipe_write, 1);
     phxfs_batch_t *hr = phxfs_batch_submit_read(&pipe_read, 1);
     CHECK(hw != nullptr && hr != nullptr, "pipelined submits queue");
     CHECK(hw && phxfs_batch_wait(hw) == 0, "pipelined write wait");
     CHECK(hr && phxfs_batch_wait(hr) == 0, "pipelined read wait");
-    CHECK(std::memcmp(pipe_src.data() + kPrefix, pipe_dst.data(), 512) == 0,
-          "pipelined read observes the earlier write");
+    CHECK(pipe_write.result == 512 && pipe_read.result == 512,
+          "pipelined results copied back");
+    CHECK(std::memcmp(pipe_seed.data() + kPrefix, pipe_dst.data(), 512) == 0,
+          "pipelined read returns the seeded data");
+    std::vector<uint8_t> pipe_verify(512, 0);
+    CHECK(pread(fd, pipe_verify.data(), 512, kPipeOffset + 4096) == 512 &&
+          std::memcmp(pipe_src.data() + kPrefix, pipe_verify.data(), 512) == 0,
+          "pipelined write landed on disk");
 
     /* Failure isolation inside one batch. */
     std::vector<uint8_t> good(lengths[0]);
