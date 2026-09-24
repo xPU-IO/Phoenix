@@ -149,10 +149,18 @@ static int run_async_batches(phxfs_io_req_t *reqs, int nreq, int do_write) {
         phxfs_batch_t *h = do_write
             ? phxfs_batch_submit_write(chunk, REQS)
             : phxfs_batch_submit_read(chunk, REQS);
-        while (!h && errno == EBUSY && !win.empty()) {
-            int w = phxfs_batch_wait(win.front());
-            failed += (w >= 0) ? w : 1;
-            win.erase(win.begin());
+        /* The pool queue (16 slots) is process-global: with N GPU workers
+         * each holding a kWindow-deep pipeline, the queue can be full when
+         * our own window is still empty. EBUSY must therefore always retry —
+         * drain our oldest batch if we have one, otherwise just back off. */
+        while (!h && errno == EBUSY) {
+            if (!win.empty()) {
+                int w = phxfs_batch_wait(win.front());
+                failed += (w >= 0) ? w : 1;
+                win.erase(win.begin());
+            } else {
+                usleep(1000);
+            }
             h = do_write ? phxfs_batch_submit_write(chunk, REQS)
                          : phxfs_batch_submit_read(chunk, REQS);
         }
