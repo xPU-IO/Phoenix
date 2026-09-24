@@ -143,8 +143,8 @@ int phxfs_write_batch(phxfs_io_req_t *reqs, int n);
  * round-robin: there is NO ordering between independent batches — a read
  * submitted after a write to the same range may observe the pre-write
  * state. Sequence dependent I/O with phxfs_batch_wait().
- * If the queue is full, submit fails immediately (non-blocking) with NULL
- * and errno == EBUSY rather than waiting for space.
+ * If the queue is full at submit time, submit blocks until a worker frees
+ * a slot (backpressure) rather than failing.
  *
  *   reqs (and every resource it references — see the lifetime contract on
  *   phxfs_read_batch above: fd, CPU buffer, GPU registration) MUST remain
@@ -155,8 +155,8 @@ int phxfs_write_batch(phxfs_io_req_t *reqs, int n);
  *   not be used again.
  *
  * phxfs_batch_submit_read/write return an opaque handle, or NULL on error
- * (errno == EBUSY if the pool's queue is full, ENOMEM on allocation
- * failure, ENOTSUP if the worker pool is unavailable).
+ * (ENOMEM on allocation failure, ENOTSUP if the worker pool is unavailable,
+ * ESHUTDOWN if the library is being unloaded).
  * phxfs_batch_wait returns the number of failed requests (>=0), or negative
  * on error, copies per-request results back, and frees the handle.
  * phxfs_batch_destroy abandons a batch: it waits for in-flight I/O to quiesce

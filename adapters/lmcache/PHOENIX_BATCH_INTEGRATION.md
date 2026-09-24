@@ -381,11 +381,11 @@ I/Os per step" — a perfect fit for batch. Recommended file layout:
   results = b.wait()                              # ensure layer L KV is resident
   ```
 
-  Submitted batches queue on a bounded FIFO (16 slots) and each runs with the
-  pool's full worker set in turn, so you can **prefetch several layers ahead**:
-  submit L+1, L+2, … without waiting for the previous one, then `wait()` the
-  handles in order. If the queue is full, submit fails with `errno == EBUSY` —
-  wait the oldest handle first and retry.
+  Submitted batches queue on a bounded FIFO (16 slots) and the pool's workers
+  service queued batches round-robin, so you can **prefetch several layers
+  ahead**: submit L+1, L+2, … without waiting for the previous one, then
+  `wait()` the handles in order. If the queue is full, submit blocks until a
+  worker frees a slot (backpressure) — no EBUSY handling is needed.
 
 - Index granularity: store `(layer, block) -> (pack_file, offset, len)`. On the
   store side, append a layer's blocks contiguously so the read offsets within a

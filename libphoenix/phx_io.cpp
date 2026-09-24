@@ -427,9 +427,11 @@ static phxfs_batch_t *phxfs_batch_submit(phxfs_io_req_t *reqs, int n,
     }
 
     if (h->bc.cnt > 0) {
-        /* Non-blocking: NULL means the pool queue is full (EBUSY) or OOM.
-         * Release refs and fail. */
-        h->pool_h = phxfs_pool_submit(h->bc.ops, h->bc.cnt, op, /*blocking=*/false);
+        /* Blocking enqueue: when the pool queue is full this waits on the
+         * pool's free_cv until a worker frees a slot (backpressure), so
+         * submit cannot fail with EBUSY no matter how many threads pipeline
+         * concurrently. NULL means OOM / pool shutdown — release and fail. */
+        h->pool_h = phxfs_pool_submit(h->bc.ops, h->bc.cnt, op, /*blocking=*/true);
         if (!h->pool_h) {
             batch_ctx_release(&h->bc);
             batch_ctx_free(&h->bc);
