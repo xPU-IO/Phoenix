@@ -129,8 +129,11 @@ typedef struct phxfs_io_req {
  *   - the CPU buffer (for host-buffer requests) must not be freed;
  *   - for registered GPU buffers, the phxfs_regmem registration is held by
  *     an internal reference for the batch's duration — a concurrent
- *     phxfs_deregmem() on it blocks until the batch completes rather than
- *     unmapping under an in-flight transfer.
+ *     phxfs_deregmem() on it blocks until those references are released.
+ *     Async references are released by wait/destroy, even if the worker has
+ *     finished. Consume the handle first on the same thread, or from another
+ *     thread while deregistration waits. Serialize regmem/deregmem calls for
+ *     the same region, including while final deregistration is waiting.
  */
 int phxfs_read_batch(phxfs_io_req_t *reqs, int n);
 int phxfs_write_batch(phxfs_io_req_t *reqs, int n);

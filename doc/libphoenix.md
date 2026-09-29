@@ -85,7 +85,9 @@ In FULL and `host_staging` modes, an exact-duplicate registration (same `addr` +
 ```c++
 int phxfs_deregmem(int device_id, const void *addr, size_t len);
 ```
-In FULL mode, drops one reference on the registration. The last reference waits for in-flight I/O on the region to drain, then removes the kernel mapping via `ioctl(PHXFS_IOCTL_UNMAP)` and `munmap`s the user-space VMA. GPU STAGING user-buffer deregistration is a no-op; the internal GPU pool is cleaned up on close. In `host_staging` mode, deregistration drops a logical registration reference and frees the record on the last reference, without kernel unmapping. The current HOST branch does not wait for in-flight I/O, so callers must complete those operations before deregistering.
+In FULL mode, drops one reference on the registration. The last reference waits for in-flight I/O on the region to drain, then removes the kernel mapping via `ioctl(PHXFS_IOCTL_UNMAP)` and `munmap`s the user-space VMA. GPU STAGING user-buffer deregistration is a no-op; the internal GPU pool is cleaned up on close. In `host_staging` mode, deregistration drops a logical registration reference. Like FULL, the last reference waits for I/O references to drain before freeing the record, without kernel unmapping.
+
+Async batch references are released by `phxfs_batch_wait` or `phxfs_batch_destroy`, not merely when the worker finishes. Consume the handle before deregistering on the same thread, or have another thread consume it while deregistration waits. For FULL and HOST, serialize registration/deregistration calls for the same region; do not re-register or issue another deregistration while its final deregistration is waiting. This wait does not introduce a state that rejects new I/O submissions.
 
 ## Single-request I/O
 

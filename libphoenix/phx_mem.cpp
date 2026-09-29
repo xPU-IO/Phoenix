@@ -445,6 +445,10 @@ int phxfs_deregmem(int device_id, const void *addr, size_t len) {
         if (m && m->user_refs > 1)
             m->user_refs--;
         else if (m) {
+            /* Match FULL: the last registration reference waits for I/O.
+             * Async batches release their refs at wait()/destroy(). */
+            while (m->refcount > 0)
+                pthread_cond_wait(&pb->drain_cv, &pb->lock);
             unlink_locked(pb, m);
             free(m);
         }
