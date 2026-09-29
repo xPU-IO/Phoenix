@@ -71,15 +71,21 @@ Drops one client reference on the public accelerator `device_id`. The last close
 ```c++
 int phxfs_regmem(int device_id, const void *addr, size_t len, void **target_addr);
 ```
-In FULL mode, registers a memory region (`addr`, `len`) for the public accelerator `device_id`: `mmap`s a VMA from the char device, then issues `ioctl(PHXFS_IOCTL_MAP)` to pin the GPU pages into it. Both `addr` and `len` must be non-zero and aligned to the device page size. In STAGING and `host_staging` modes, user-buffer registration is a logical registration with no kernel GPU-page mapping; the internal staging pool is registered during `phxfs_open` and must satisfy the kernel's physical 2 MiB span contract. On success, `target_addr` receives the host-mapped address in FULL mode, or `addr` in STAGING mode — an **internal handle for reference only**; the I/O calls identify a buffer by its original device address `addr`, never by `target_addr`.
+In FULL mode, registers a memory region (`addr`, `len`) for the public accelerator `device_id`: `mmap`s a VMA from the char device, then issues `ioctl(PHXFS_IOCTL_MAP)` to pin the GPU pages into it. Both `addr` and `len` must be non-zero and aligned to the device page size.
 
-Registration semantics: an exact-duplicate registration (same `addr` + `len`, still live) is reference-counted and reused (deregister once per register); any other overlap with a live registration is rejected with `-EINVAL`.
+In GPU STAGING mode, user-buffer registration and deregistration are no-ops after their entry checks: no user-buffer registration node or kernel mapping is created. Only the internal GPU staging pool is registered during `phxfs_open`, and it must satisfy the kernel's physical 2 MiB span contract.
+
+In `host_staging` mode, user-buffer registration creates a logical record without a kernel GPU-page mapping. The separate pinned host pool does not use the GPU staging pool's BAR registration or physical 2 MiB span contract.
+
+On success, `target_addr` receives the host-mapped address in FULL mode, or `addr` in GPU STAGING and `host_staging` modes — an **internal handle for reference only**; the I/O calls identify a buffer by its original device address `addr`, never by `target_addr`.
+
+In FULL and `host_staging` modes, an exact-duplicate registration (same `addr` + `len`, still live) is reference-counted and reused (deregister once per register); any other overlap with a live registration is rejected with `-EINVAL`. GPU STAGING user buffers do not participate in this bookkeeping.
 
 ### `phxfs_deregmem`
 ```c++
 int phxfs_deregmem(int device_id, const void *addr, size_t len);
 ```
-Drops one reference on the registration. The last reference waits for in-flight I/O on the region to drain, then removes the kernel mapping via `ioctl(PHXFS_IOCTL_UNMAP)` and `munmap`s the user-space VMA.
+In FULL mode, drops one reference on the registration. The last reference waits for in-flight I/O on the region to drain, then removes the kernel mapping via `ioctl(PHXFS_IOCTL_UNMAP)` and `munmap`s the user-space VMA. GPU STAGING user-buffer deregistration is a no-op; the internal GPU pool is cleaned up on close. In `host_staging` mode, deregistration drops a logical registration reference and frees the record on the last reference, without kernel unmapping. The current HOST branch does not wait for in-flight I/O, so callers must complete those operations before deregistering.
 
 ## Single-request I/O
 

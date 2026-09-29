@@ -366,7 +366,14 @@ int phxfs_regmem(int device_id, const void *addr, size_t len, void **target_addr
      * (a no-op) so callers keep the register-your-buffer contract while the
      * buffer stays free of struct pages and registerable by RDMA/peermem.
      */
-    if (pb->map_mode == PHX_MAP_MODE_STAGING || pb->map_mode == PHX_MAP_MODE_HOST) {
+    if (pb->map_mode == PHX_MAP_MODE_STAGING) {
+        *target_addr = (void *)addr;
+        dev_put(pb);
+        return 0;
+    }
+
+    /* Host fallback tracks user buffers without creating a kernel mapping. */
+    if (pb->map_mode == PHX_MAP_MODE_HOST) {
         *target_addr = (void *)addr;
         pthread_mutex_lock(&pb->lock);
         bool overlap = false;

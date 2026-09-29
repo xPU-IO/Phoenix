@@ -7,6 +7,7 @@
 //   4. Deregister in reverse order
 //   5. Double-deregister error handling
 //   6. Reuse after deregister
+//   7. GPU STAGING user registration remains a no-op (issue #26)
 //
 // Build: via CMake (make test_regmem)
 // Run:   ./test_regmem [gpu_id]
@@ -218,6 +219,49 @@ static void test_reregister(int dev_id) {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #26: same-size reuse can hide stale registration records. Change the
+// extent at the same address after deregistration to expose the stale overlap.
+// GPU STAGING user registrations must also accept overlapping live ranges:
+// only the internal GPU pool has a real registration in this mode.
+static void test_staging_noop_regmem(int dev_id) {
+    if (phxfs_get_map_mode(dev_id) != 1) {
+        printf("\n[SKIP] Issue #26 regression requires GPU STAGING mode\n");
+        return;
+    }
+    printf("\n=== Issue #26: GPU STAGING no-op registration ===\n");
+    void *gpu_buf = nullptr;
+    cudaError_t alloc_rc = cudaMalloc(&gpu_buf, 2 * MiB);
+    CHECK(alloc_rc == cudaSuccess, "allocate issue #26 test buffer");
+    if (alloc_rc != cudaSuccess)
+        return;
+
+    void *target = nullptr;
+    int ret = phxfs_regmem(dev_id, gpu_buf, MiB, &target);
+    CHECK(ret == 0 && target == gpu_buf, "STAGING register returns original pointer");
+    if (ret == 0)
+        CHECK(phxfs_deregmem(dev_id, gpu_buf, MiB) == 0,
+              "STAGING deregister initial extent");
+
+    target = nullptr;
+    ret = phxfs_regmem(dev_id, gpu_buf, 2 * MiB, &target);
+    CHECK(ret == 0 && target == gpu_buf,
+          "STAGING re-register same address with larger extent");
+    if (ret == 0) {
+        void *inner = static_cast<char *>(gpu_buf) + MiB;
+        void *inner_target = nullptr;
+        int inner_ret = phxfs_regmem(dev_id, inner, MiB, &inner_target);
+        CHECK(inner_ret == 0 && inner_target == inner,
+              "STAGING overlapping user range remains a no-op");
+        if (inner_ret == 0)
+            CHECK(phxfs_deregmem(dev_id, inner, MiB) == 0,
+                  "STAGING deregister inner extent");
+        CHECK(phxfs_deregmem(dev_id, gpu_buf, 2 * MiB) == 0,
+              "STAGING deregister larger extent");
+    }
+    CHECK(cudaFree(gpu_buf) == cudaSuccess, "free issue #26 test buffer");
+}
+
+// ---------------------------------------------------------------------------
 // Test 7: Large registration (256MiB)
 // ---------------------------------------------------------------------------
 static void test_large_regmem(int dev_id) {
@@ -271,6 +315,7 @@ int main(int argc, char **argv) {
     test_misaligned_size(dev_id);
     test_dereg_unregistered(dev_id);
     test_reregister(dev_id);
+    test_staging_noop_regmem(dev_id);
     test_large_regmem(dev_id);
 
     phxfs_close(dev_id);
