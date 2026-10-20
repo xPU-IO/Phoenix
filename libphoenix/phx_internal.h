@@ -59,6 +59,7 @@ typedef struct phxfs_mmap_node_s {
     void *vaddr;        /* single contiguous host-mapped P2P address */
     uint64_t dev_addr;  /* registered GPU/device address (lookup key) */
     size_t length;      /* registered length */
+    void *owned_allocation; /* internal probe allocation: free after VMA cleanup */
     bool has_reg;       /* kernel P2P mapping active (ioctl MAP done, not UNMAP) */
     bool mapped;        /* host VMA active (mmap done, munmap not yet) */
     int  user_refs;     /* outstanding regmem() references (dup reuse) */
