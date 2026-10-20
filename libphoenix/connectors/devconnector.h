@@ -134,6 +134,11 @@ struct devconn_ops {
      */
     void  (*range_push)(const char *name);
     void  (*range_pop)(void);
+
+    /* Validate a public accelerator ordinal without selecting it on the
+     * calling thread or requiring a phxfs kernel device. Returns 0 or a
+     * negative errno. Required for HOST/auto device discovery and open. */
+    int   (*validate_device)(int device_id);
 };
 
 /*

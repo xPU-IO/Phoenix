@@ -283,6 +283,13 @@ static int phx_open_finish(int deviceID, phxfs_mmap_buffer_t *pb);
 int phxfs_open(int deviceID) {
     if (deviceID < 0 || deviceID >= g_device_count)
         return -1;
+    if (phx_host_mode_requested()) {
+        if (!devconn || !devconn->validate_device)
+            return -EOPNOTSUPP;
+        int rc = devconn->validate_device(deviceID);
+        if (rc != 0)
+            return rc;
+    }
     phxfs_mmap_buffer_t *pb = &mbuffer[deviceID];
 
     PHX_RANGE("phx.open");
@@ -410,7 +417,8 @@ int phxfs_find_dev(int device_id) {
     if (device_id < 0 || device_id >= g_device_count)
         return -1;
     if (phx_host_mode_requested())
-        return device_id;
+        return devconn && devconn->validate_device &&
+            devconn->validate_device(device_id) == 0 ? device_id : -1;
     if (!devconn || !devconn->find_device ||
         devconn->find_device(device_id) < 0)
         return -1;

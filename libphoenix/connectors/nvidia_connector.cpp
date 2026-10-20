@@ -202,6 +202,14 @@ static void nvidia_host_free(void *ptr)
         cudaFreeHost(ptr);
 }
 
+static int nvidia_validate_device(int device_id)
+{
+    int count = 0;
+    if (cudaGetDeviceCount(&count) != cudaSuccess)
+        return -EIO;
+    return device_id >= 0 && device_id < count ? 0 : -ENODEV;
+}
+
 static int nvidia_set_device(int device_id)
 {
     int n_gpus = 0;
@@ -438,6 +446,7 @@ static struct devconn_ops nvidia_devconn = {
     .range_push   = NULL,
     .range_pop    = NULL,
 #endif
+    .validate_device = nvidia_validate_device,
 };
 
 /* The global connector — referenced by core code via extern */
