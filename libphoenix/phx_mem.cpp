@@ -16,8 +16,6 @@
 
 /* Vendor connector hook: allocate/free a small device probe buffer without
  * exposing CUDA/HIP headers to the core. */
-extern "C" int phx_connector_probe_alloc(int device_id, size_t size, void **ptr);
-extern "C" void phx_connector_probe_free(void *ptr);
 
 /* Forward decl: defined below, called by free_phxfs_p2p_map. */
 static int __phxfs_deregmem(phxfs_mmap_buffer_t *pb, u64 dev_addr, u64 c_addr, size_t len);
@@ -164,6 +162,8 @@ static int __phxfs_deregmem(phxfs_mmap_buffer_t *pb, u64 dev_addr, u64 c_addr, s
 }
 
 int phx_direct_probe(int device_id) {
+    if (!devconn || !devconn->mem_alloc || !devconn->mem_free)
+        return -EOPNOTSUPP;
     phxfs_mmap_buffer_t *pb = dev_get(device_id);
     if (!pb || pb->map_mode != PHX_MAP_MODE_FULL) {
         if (pb) dev_put(pb);
@@ -172,17 +172,20 @@ int phx_direct_probe(int device_id) {
     void *dptr = NULL;
     const size_t probe_size = devconn && devconn->page_size
         ? (size_t)devconn->page_size : HUGE_PAGE_SIZE;
-    int rc = phx_connector_probe_alloc(device_id, probe_size, &dptr);
+    int rc = devconn->mem_alloc(device_id, probe_size, &dptr);
     if (rc == 0) {
         void *target = NULL;
         rc = phx_regmem_internal(pb, dptr, probe_size, &target);
-        /* phx_regmem_internal() linked a node (or took a reference on an
-         * identical live one): undo exactly that through the normal dereg
-         * path, so neither a stale node pointing at an unmapped VMA is left
-         * on the list nor another registration's mapping is torn down. */
-        if (rc == 0 && phxfs_deregmem(device_id, dptr, probe_size) != 0)
-            rc = -EIO;
-        phx_connector_probe_free(dptr);
+        if (rc == 0) {
+            /* The registration owns the private allocation until its VMA is
+             * gone. Failed deregistration keeps both available for retry. */
+            pthread_mutex_lock(&pb->lock);
+            find_locked(pb, (u64)dptr)->owned_allocation = dptr;
+            pthread_mutex_unlock(&pb->lock);
+            rc = phxfs_deregmem(device_id, dptr, probe_size);
+        } else {
+            devconn->mem_free(dptr);
+        }
     }
     dev_put(pb);
     return rc;
@@ -245,8 +248,15 @@ void free_phxfs_p2p_map(phxfs_mmap_buffer_t *buffer) {
         if (current->has_reg)
             __phxfs_deregmem(buffer, current->dev_addr,
                              (uint64_t)current->vaddr, current->length);
+        bool vma_gone = !current->mapped;
         if (current->mapped && current->vaddr && current->vaddr != MAP_FAILED)
-            munmap(current->vaddr, current->length);   /* VMA-only node: still ok to unmap */
+            vma_gone = munmap(current->vaddr, current->length) == 0;
+        if (current->owned_allocation) {
+            if (vma_gone)
+                devconn->mem_free(current->owned_allocation);
+            else
+                fprintf(stderr, "probe VMA cleanup failed: retaining allocation for safety\n");
+        }
         free(current);
         current = next;
     }
@@ -281,6 +291,7 @@ int phx_regmem_internal(phxfs_mmap_buffer_t *pb, const void *addr, size_t len,
         return -ENOMEM;
     }
     p2p_map->vaddr = NULL;
+    p2p_map->owned_allocation = NULL;
     p2p_map->length = len;
     p2p_map->dev_addr = (uint64_t)addr;
     p2p_map->has_reg = false;
@@ -483,24 +494,28 @@ int phxfs_deregmem(int device_id, const void *addr, size_t len) {
     pthread_mutex_unlock(&pb->lock);
 
     if (m->has_reg) {
-        if (__phxfs_deregmem(pb, m->dev_addr, (uint64_t)m->vaddr, m->length) != 0) {
+        int rc = __phxfs_deregmem(pb, m->dev_addr, (uint64_t)m->vaddr, m->length);
+        if (rc != 0) {
             fprintf(stderr, "%s: __phxfs_deregmem fail\n", __func__);
             insert_phxfs_mmap_node(pb, m);   /* retriable: has_reg+mapped intact */
             dev_put(pb);
-            return -1;
+            return rc;
         }
         m->has_reg = false;
     }
     if (m->mapped) {
         if (munmap(m->vaddr, m->length) != 0) {
-            fprintf(stderr, "%s: munmap fail (%s)\n", __func__, strerror(errno));
+            int rc = -errno;
+            fprintf(stderr, "%s: munmap fail (%s)\n", __func__, strerror(-rc));
             insert_phxfs_mmap_node(pb, m);   /* retriable: has_reg=false, mapped=true */
             dev_put(pb);
-            return -1;
+            return rc;
         }
         m->mapped = false;
     }
 
+    if (m->owned_allocation)
+        devconn->mem_free(m->owned_allocation);
     free(m);
     dev_put(pb);
     return 0;
