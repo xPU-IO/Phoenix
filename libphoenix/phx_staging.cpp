@@ -63,7 +63,9 @@ static size_t staging_size_bytes(void) {
 /* Setup / teardown                                                   */
 /* ------------------------------------------------------------------ */
 
-int phx_staging_setup(int device_id) {
+int phx_staging_setup(int device_id, bool *mapping_rejected) {
+    if (mapping_rejected)
+        *mapping_rejected = false;
     PHX_RANGE("phx.staging.setup");
     if (!devconn || !devconn->mem_alloc || !devconn->mem_free ||
         !devconn->memcpy_dtod) {
@@ -139,6 +141,8 @@ int phx_staging_setup(int device_id) {
             break;
     }
     if (rc != 0) {
+        if (mapping_rejected)
+            *mapping_rejected = rc == -EINVAL;
         devconn->mem_free(raw);
         dev_put(pb);
         return rc;
