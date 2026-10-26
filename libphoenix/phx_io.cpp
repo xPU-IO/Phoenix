@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <pthread.h>
 #include <vector>
+#include <new>
+#include <stdexcept>
 #include <unistd.h>
 
 #include "phoenix.h"
@@ -366,7 +368,14 @@ struct host_slice {
     off_t file_offset = 0;
 };
 
+struct host_batch_ctx;
+static void host_batch_release(host_batch_ctx *bc);
+
 struct host_batch_ctx {
+    host_batch_ctx() = default;
+    host_batch_ctx(const host_batch_ctx &) = delete;
+    host_batch_ctx &operator=(const host_batch_ctx &) = delete;
+    ~host_batch_ctx() { host_batch_release(this); }
     std::vector<phxfs_io_op_req> ops;
     std::vector<host_slice> slices;
     std::vector<phxfs_p2p_map_t *> nodes;
@@ -392,7 +401,7 @@ static host_worker_state *host_worker_get(struct phxfs_io_worker_ctx *worker) {
     if (!worker)
         return nullptr;
     if (!worker->opaque) {
-        worker->opaque = new host_worker_state();
+        worker->opaque = new (std::nothrow) host_worker_state();
         worker->cleanup = host_worker_cleanup;
     }
     return static_cast<host_worker_state *>(worker->opaque);
@@ -402,7 +411,9 @@ static int host_prepare(phxfs_io_op_req *op, enum phxfs_io_op direction,
                         struct phxfs_io_worker_ctx *worker, int slot) {
     host_slice *slice = static_cast<host_slice *>(op->private_data);
     host_worker_state *state = host_worker_get(worker);
-    if (!slice || !state || slot < 0 || slot >= PHXFS_HOST_STAGE_SLOTS ||
+    if (!state)
+        return -ENOMEM;
+    if (!slice || slot < 0 || slot >= PHXFS_HOST_STAGE_SLOTS ||
         !devconn || !devconn->host_alloc)
         return -EINVAL;
 
@@ -443,11 +454,14 @@ static void host_complete(phxfs_io_op_req *op, enum phxfs_io_op direction,
 static void host_batch_release(host_batch_ctx *bc) {
     if (!bc)
         return;
-    if (!bc->nodes.empty())
-        batch_release_mappings(bc->devs.data(), bc->nodes.data(), bc->nreq);
+    const size_t count = std::min(bc->devs.size(), bc->nodes.size());
+    batch_release_mappings(bc->devs.data(), bc->nodes.data(), (int)count);
+    bc->nodes.clear();
     for (int d = 0; d < g_device_count; d++)
-        if (bc->dev_held[d])
+        if (bc->dev_held[d]) {
             dev_put(&mbuffer[d]);
+            bc->dev_held[d] = false;
+        }
 }
 
 static int host_batch_finalize(host_batch_ctx *bc) {
@@ -480,7 +494,7 @@ static int host_batch_finalize(host_batch_ctx *bc) {
 }
 
 static int host_batch_prepare(phxfs_io_req_t *reqs, int n,
-                              host_batch_ctx *bc) {
+                              host_batch_ctx *bc) try {
     bc->reqs = reqs;
     bc->nreq = n;
     bc->nodes.assign((size_t)n, nullptr);
@@ -572,6 +586,14 @@ static int host_batch_prepare(phxfs_io_req_t *reqs, int n,
         }
     }
     return 0;
+} catch (const std::bad_alloc &) {
+    host_batch_release(bc);
+    errno = ENOMEM;
+    return -ENOMEM;
+} catch (const std::length_error &) {
+    host_batch_release(bc);
+    errno = ENOMEM;
+    return -ENOMEM;
 }
 
 static void batch_ctx_free(struct batch_ctx *bc) {
@@ -765,7 +787,12 @@ static phxfs_batch_t *phxfs_batch_submit(phxfs_io_req_t *reqs, int n,
         return h;
     }
     if (batch_uses_host(reqs, n)) {
-        h->host_bc = new host_batch_ctx();
+        h->host_bc = new (std::nothrow) host_batch_ctx();
+        if (!h->host_bc) {
+            free(h);
+            errno = ENOMEM;
+            return NULL;
+        }
         if (host_batch_prepare(reqs, n, h->host_bc) < 0) {
             host_batch_release(h->host_bc);
             delete h->host_bc;
