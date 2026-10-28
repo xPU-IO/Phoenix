@@ -349,3 +349,13 @@ int phxFileWriteAsync(void *fh, void *buf_base,
                               (off_t *)buf_offset, (off_t *)file_offset,
                               (ssize_t *)bytes_done, stream);
 }
+
+int phxFileGetIOStats(phxFileIOStats *out)
+{
+    return phxfs_get_io_stats((phxfs_io_stats_t *)out);
+}
+
+int phxFileResetIOStats(void)
+{
+    return phxfs_reset_io_stats();
+}

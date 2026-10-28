@@ -133,6 +133,20 @@ int phxFileWriteAsync(void *fh, void *buf_base,
                       int64_t *buf_offset, int64_t *bytes_done,
                       void *stream);
 
+typedef struct phxFileIOStats {
+    uint64_t read_submit_count, write_submit_count;
+    uint64_t read_submit_bytes, write_submit_bytes;
+    uint64_t read_completed_bytes, write_completed_bytes;
+    uint64_t read_error_count, write_error_count;
+    uint64_t read_callback_wait_ns, write_callback_wait_ns;
+    uint64_t read_xfer_ns, write_xfer_ns;
+    uint64_t read_callback_ns, write_callback_ns;
+    uint64_t inflight_count, max_inflight;
+} phxFileIOStats;
+
+int phxFileGetIOStats(phxFileIOStats *out);
+int phxFileResetIOStats(void);
+
 #ifdef __cplusplus
 }
 #endif

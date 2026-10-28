@@ -17,9 +17,12 @@ CFLAGS  += -std=c11 -fPIC -Wall -Wextra
 # A stale phoenix.h (e.g. deployed .so newer than the installed header)
 # must fail the build, not silently compile against implicit declarations.
 CFLAGS  += -Werror=implicit-function-declaration
-CPPFLAGS += -I/usr/local/include
+PHOENIX_INCLUDE_DIR ?= /usr/local/include
+PHOENIX_LIB_DIR ?= /usr/local/lib
+PHOENIX_LIBNAME ?= phoenix
+CPPFLAGS += -I$(PHOENIX_INCLUDE_DIR)
 LDFLAGS += -shared
-LDLIBS  += -L/usr/local/lib -lphoenix -lpthread
+LDLIBS  += -L$(PHOENIX_LIB_DIR) -l$(PHOENIX_LIBNAME) -lpthread
 
 TARGET  := libphxfile.so
 HEADERS := phxfile.h
