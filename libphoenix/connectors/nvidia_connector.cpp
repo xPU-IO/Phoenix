@@ -407,15 +407,27 @@ static void nvidia_range_pop(void)
 /* Connector registration                                             */
 /* ------------------------------------------------------------------ */
 
+#ifdef PHXFS_ILUVATAR
+extern "C" int iluvatar_cuda_bind(void);
+#endif
+
 static int nvidia_init(void)
 {
-    /* CUDA runtime auto-initializes on first API call — nothing to do */
+#ifdef PHXFS_ILUVATAR
+    return iluvatar_cuda_bind() == 0 ? 0 : -ENODEV;
+#else
     return 0;
+#endif
 }
 
 static struct devconn_ops nvidia_devconn = {
+#ifdef PHXFS_ILUVATAR
+    .name         = "iluvatar",
+    .page_size    = 4096,
+#else
     .name         = "nvidia",
     .page_size    = 64 * 1024,
+#endif
     .init         = nvidia_init,
     .find_device  = nvidia_find_device,
     .mem_alloc    = nvidia_mem_alloc,

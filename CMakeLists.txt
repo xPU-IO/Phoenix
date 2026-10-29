@@ -2,8 +2,8 @@ cmake_minimum_required (VERSION 3.18)
 
 # Vendor selection must be set before project() so we can conditionally
 # enable the CUDA language.
-set (PHXFS_VENDOR "NVIDIA" CACHE STRING "Target GPU vendor: NVIDIA, METAX, AMD, HUAWEI")
-set_property (CACHE PHXFS_VENDOR PROPERTY STRINGS NVIDIA METAX AMD HUAWEI)
+set (PHXFS_VENDOR "NVIDIA" CACHE STRING "Target GPU vendor: NVIDIA, METAX, AMD, HUAWEI, ILUVATAR")
+set_property (CACHE PHXFS_VENDOR PROPERTY STRINGS NVIDIA METAX AMD HUAWEI ILUVATAR)
 
 if (PHXFS_VENDOR STREQUAL "NVIDIA")
     project (libphoenix LANGUAGES CUDA C CXX)
@@ -136,8 +136,11 @@ elseif (PHXFS_VENDOR STREQUAL "AMD")
 elseif (PHXFS_VENDOR STREQUAL "HUAWEI")
     set (VENDOR_BACKEND "huawei-backend.o")
     set (VENDOR_DEFINE "CONFIG_PHXFS_VENDOR_HUAWEI")
+elseif (PHXFS_VENDOR STREQUAL "ILUVATAR")
+    set (VENDOR_BACKEND "iluvatar-backend.o")
+    set (VENDOR_DEFINE "CONFIG_PHXFS_VENDOR_ILUVATAR")
 else ()
-    message (FATAL_ERROR "Unsupported PHXFS_VENDOR: ${PHXFS_VENDOR}. Use NVIDIA, METAX, AMD, or HUAWEI.")
+    message (FATAL_ERROR "Unsupported PHXFS_VENDOR: ${PHXFS_VENDOR}. Use NVIDIA, METAX, AMD, HUAWEI, or ILUVATAR.")
 endif ()
 
 # Try to find Nvidia driver headers (only needed for NVIDIA backend)
@@ -248,8 +251,11 @@ if (NOT LIBURING_FOUND)
 endif ()
 
 # Select vendor-specific connector source file
-if (PHXFS_VENDOR STREQUAL "NVIDIA" OR PHXFS_VENDOR STREQUAL "METAX")
+if (PHXFS_VENDOR STREQUAL "NVIDIA" OR PHXFS_VENDOR STREQUAL "METAX" OR PHXFS_VENDOR STREQUAL "ILUVATAR")
     set(devconn_source "${libphoenix_root}/connectors/nvidia_connector.cpp")
+    if (PHXFS_VENDOR STREQUAL "ILUVATAR")
+        list(APPEND devconn_source "${libphoenix_root}/connectors/iluvatar_cuda_rt.cpp")
+    endif ()
 elseif (PHXFS_VENDOR STREQUAL "AMD")
     set(devconn_source "${libphoenix_root}/connectors/amd_connector.cpp")
 elseif (PHXFS_VENDOR STREQUAL "HUAWEI")
@@ -272,6 +278,18 @@ if (PHXFS_VENDOR STREQUAL "NVIDIA")
     if (phx_nvtx)
         target_compile_definitions(libphoenix PRIVATE PHX_NVTX=1)
     endif ()
+elseif (PHXFS_VENDOR STREQUAL "ILUVATAR")
+    # Headers only. libcudart is dlopened next to the libcuda that matches
+    # /sys/module/iluvatar/version; do not DT_NEEDED a CoreX libcudart.
+    set (COREX_PATH "/usr/local/corex" CACHE PATH "CoreX SDK prefix")
+    target_include_directories(libphoenix BEFORE PRIVATE "${COREX_PATH}/include")
+    target_compile_definitions(libphoenix PRIVATE PHXFS_ILUVATAR=1)
+    add_executable(phx_full_roundtrip example/full_roundtrip.cc
+        "${libphoenix_root}/connectors/iluvatar_dlopen_interpose.cpp")
+    target_include_directories(phx_full_roundtrip PRIVATE
+        "${libphoenix_root}/include" "${COREX_PATH}/include")
+    target_link_libraries(phx_full_roundtrip PRIVATE libphoenix ${CMAKE_DL_LIBS})
+    target_link_options(phx_full_roundtrip PRIVATE "LINKER:--export-dynamic")
 elseif (PHXFS_VENDOR STREQUAL "AMD")
     # HIP runtime: the connector only uses the plain C HIP API, so it is
     # compiled by the regular CXX compiler — no hipcc needed for the

@@ -13,6 +13,7 @@
  *   CONFIG_PHXFS_VENDOR_METAX
  *   CONFIG_PHXFS_VENDOR_AMD
  *   CONFIG_PHXFS_VENDOR_HUAWEI
+ *   CONFIG_PHXFS_VENDOR_ILUVATAR
  *
  * Single-vendor-per-machine assumption: only one backend is compiled in.
  */
@@ -29,6 +30,10 @@
 #define PHXFS_PCI_ACCEL_CLASS 0x1200
 #elif defined(CONFIG_PHXFS_VENDOR_HUAWEI)
 #define PHXFS_PCI_VENDOR_ID 0x19E5
+#elif defined(CONFIG_PHXFS_VENDOR_ILUVATAR)
+#define PHXFS_PCI_VENDOR_ID 0x1e3e
+/* MR-V100 / TG-V300 show up as Processing accelerators, class 0x1200. */
+#define PHXFS_PCI_ACCEL_CLASS 0x1200
 #else
 /* Default to NVIDIA for backward compatibility */
 #define PHXFS_PCI_VENDOR_ID 0x10DE

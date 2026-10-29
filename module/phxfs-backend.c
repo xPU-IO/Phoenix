@@ -34,6 +34,8 @@ extern int metax_backend_register(void);
 extern int amd_backend_register(void);
 #elif defined(CONFIG_PHXFS_VENDOR_HUAWEI)
 extern int huawei_backend_register(void);
+#elif defined(CONFIG_PHXFS_VENDOR_ILUVATAR)
+extern int iluvatar_backend_register(void);
 #else
 extern int nvidia_backend_register(void);
 #endif
@@ -48,6 +50,8 @@ int phxfs_p2p_backend_init(void)
 	ret = amd_backend_register();
 #elif defined(CONFIG_PHXFS_VENDOR_HUAWEI)
 	ret = huawei_backend_register();
+#elif defined(CONFIG_PHXFS_VENDOR_ILUVATAR)
+	ret = iluvatar_backend_register();
 #else
 	ret = nvidia_backend_register();
 #endif

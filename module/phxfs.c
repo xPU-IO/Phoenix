@@ -49,6 +49,12 @@ int phxfs_debug = 0;
 module_param(phxfs_debug, int, 0644);
 MODULE_PARM_DESC(phxfs_debug, "Enable info-level logging (0=off, 1=on)");
 
+/* Empty: discover every vendor device. A BDF limits FULL remap to one card. */
+static char *phxfs_only_bdf;
+module_param(phxfs_only_bdf, charp, 0444);
+MODULE_PARM_DESC(phxfs_only_bdf,
+	"If set (for example 0000:06:00.0), ignore every other PCI device");
+
 int phxfs_map_mode = PHXFS_MAP_MODE_DEFAULT;
 module_param(phxfs_map_mode, int, 0644);
 MODULE_PARM_DESC(phxfs_map_mode,
@@ -1239,6 +1245,19 @@ static void phxfs_scan_pci_class(unsigned int class)
 	while ((pdev = pci_get_class(class, pdev)) != NULL) {
 		if (pdev->vendor != PHXFS_PCI_VENDOR_ID || !pdev->bus)
 			continue;
+		{
+			char bdf[32];
+
+			snprintf(bdf, sizeof(bdf), "%04x:%02x:%02x.%d",
+				 pci_domain_nr(pdev->bus), pdev->bus->number,
+				 PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
+			if (phxfs_only_bdf && phxfs_only_bdf[0] &&
+			    strcasecmp(bdf, phxfs_only_bdf) != 0) {
+				phxfs_info("phxfs: skip GPU %s (phxfs_only_bdf=%s)\n",
+					   bdf, phxfs_only_bdf);
+				continue;
+			}
+		}
 		if (phxfs_numa_node >= 0 &&
 		    pcibus_to_node(pdev->bus) != phxfs_numa_node) {
 			phxfs_info("phxfs: skip GPU %04x:%02x:%02x.%d (numa mismatch)\n",
