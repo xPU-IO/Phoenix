@@ -21,6 +21,8 @@ struct phxfs_p2p_handle;
  *   for bare-metal direct I/O).
  *
  * Lifecycle:
+ *   - Caller must keep the GPU allocation/context alive until all DMA
+ *     has drained and phxfs_p2p_deregister(handle) has completed.
  *   - Caller must call phxfs_p2p_deregister(handle) when done.
  *   - If the device driver forcefully reclaims the pages (context
  *     destroyed), Phoenix's internal free_callback fires and marks the

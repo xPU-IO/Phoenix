@@ -9,6 +9,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/compiler.h>
 #include <linux/completion.h>
@@ -27,7 +28,7 @@ enum {
 
 struct phxfs_p2p_handle {
 	struct phxfs_page_table       *pt;
-	uint64_t                     *ioaddrs;    /* kmalloc'd */
+	uint64_t                     *ioaddrs;    /* kvmalloc'd */
 	uint32_t                      n_addrs;
 	uint64_t                      gpu_vaddr;
 	int                           invalidated; /* set by free_callback */
@@ -42,7 +43,7 @@ static void phxfs_p2p_handle_put(struct phxfs_p2p_handle *h)
 {
 	if (!refcount_dec_and_test(&h->refs))
 		return;
-	kfree(h->ioaddrs);
+	kvfree(h->ioaddrs);
 	kfree(h);
 	module_put(THIS_MODULE);
 }
@@ -118,12 +119,18 @@ int phxfs_p2p_register(uint64_t gpu_vaddr,
                        uint32_t *out_n_addrs)
 {
 	struct phxfs_p2p_handle *h;
+	const char *stage = "page_count";
 	int err;
 
 	if (!out_handle || !out_ioaddrs || !out_n_addrs)
 		return -EINVAL;
+	*out_handle = NULL;
+	*out_ioaddrs = NULL;
+	*out_n_addrs = 0;
 	if (gpu_vaddr == 0 || length == 0)
 		return -EINVAL;
+	if (!phxfs_p2p)
+		return -ENODEV;
 
 	/* Prevent Phoenix from being unloaded while handles are active */
 	if (!try_module_get(THIS_MODULE))
@@ -161,14 +168,25 @@ int phxfs_p2p_register(uint64_t gpu_vaddr,
 	 * A reclaim callback that fires meanwhile waits on reg_done, so h->pt
 	 * stays valid until complete_all() below. */
 	h->n_addrs = phxfs_p2p->get_n_pages(h->pt);
-	h->ioaddrs = kmalloc_array(h->n_addrs, sizeof(uint64_t), GFP_KERNEL);
-	if (!h->ioaddrs)
-		err = -ENOMEM;
-	else
-		err = phxfs_p2p->get_phys_addrs(h->pt, h->ioaddrs, h->n_addrs);
+	if (!h->n_addrs) {
+		err = -EIO;
+	} else {
+		stage = "ioaddrs_alloc";
+		h->ioaddrs = kvmalloc_array(h->n_addrs, sizeof(*h->ioaddrs), GFP_KERNEL);
+		if (!h->ioaddrs) {
+			err = -ENOMEM;
+		} else {
+			stage = "get_phys_addrs";
+			err = phxfs_p2p->get_phys_addrs(h->pt, h->ioaddrs, h->n_addrs);
+		}
+	}
 	complete_all(&h->reg_done);
 	if (err) {
-		phxfs_err("phxfs_p2p_register: get_phys_addrs failed, err=%d\n", err);
+		phxfs_err("phxfs_p2p_register: %s failed, vaddr=0x%llx "
+			  "len=%llu n_addrs=%u table_bytes=%llu err=%d\n",
+			  stage, (unsigned long long)gpu_vaddr,
+			  (unsigned long long)length, h->n_addrs,
+			  (unsigned long long)h->n_addrs * sizeof(*h->ioaddrs), err);
 		phxfs_p2p_owner_release(h);
 		phxfs_p2p_handle_put(h);	/* owner; frees + module_put */
 		return err;
