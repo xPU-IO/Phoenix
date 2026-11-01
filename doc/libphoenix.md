@@ -12,7 +12,7 @@ For NVIDIA Grace Hopper (H100/GH200), Grace Blackwell, and systems where the dir
 export PHXFS_MODE=auto
 ```
 
-`auto` opens the direct path when the kernel module and GPU P2P mapping work, then switches to `host_staging` when the probe fails. `host_staging` can be selected explicitly and does not require the Phoenix kernel module:
+`auto` opens the direct path when the kernel module and GPU P2P mapping work, then applies the unavailable-path error policy below to device opening, probing and pool setup. Device discovery retains its older, less precise fallback behavior (see “Discovery limitation”). `host_staging` can be selected explicitly and does not require the Phoenix kernel module:
 
 ```bash
 export PHXFS_MODE=host_staging
@@ -272,3 +272,27 @@ The four families may be mixed freely: one process, and even one batch, can comb
 | Parameter storage | copied by value at submission time | late-binding: `nbytes/buf_offset/f_offset/bytes_done` are dereferenced when the stream executes the op |
 
 General rules for all interfaces: `O_DIRECT` is recommended and requires block alignment (4 KiB padding is a good practice); pair every `phxfs_regmem` with exactly one `phxfs_deregmem`.
+
+### Automatic fallback errors
+
+Once discovery has returned a valid phxfs device index,
+`PHXFS_MODE=auto` falls back to HOST for unavailable direct paths
+(`ENOENT`, `ENODEV`, `ENXIO`, `EOPNOTSUPP`, `ENOSYS`), including failure
+to open a discovered device node. STAGING also permits fallback when all
+valid mapping windows have been tried and rejected with `EINVAL`. Invalid
+setup parameters, permission failures, `ENOMEM`, and `EIO` are reported.
+A FULL probe's `EINVAL` is not treated as an availability failure. Direct
+resources are rolled back before HOST initialization, while concurrent
+open/close calls continue to wait for the same device's initialization.
+Explicit direct mode never falls back.
+
+### Discovery limitation
+
+The bounded error policy above does not cover `find_device()`. A negative
+discovery result still selects HOST in auto mode. Both NVIDIA and AMD
+connectors collapse runtime PCI bus-ID query failures and unmatched sysfs scans
+into `-1`; the scans skip sysfs entries that cannot be opened or read. Thus a
+permission or I/O fault during discovery can still be indistinguishable from
+an absent kernel device. This behavior predates this change and is not fixed
+here. A follow-up requires a connector discovery error contract that separates
+absence from runtime, permission and I/O failures, plus matching core handling.

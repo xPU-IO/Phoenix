@@ -150,7 +150,7 @@ int phx_regmem_internal(phxfs_mmap_buffer_t *pb, const void *addr, size_t len,
 
 /* ---- phx_staging.cpp ---- */
 /* Allocate + register the per-device staging pool (staging mode only). */
-int  phx_staging_setup(int device_id);
+int  phx_staging_setup(int device_id, bool *mapping_rejected = nullptr);
 /* Free the staging pool. Called during close teardown AFTER the staging
  * registration has been torn down; pb ref is not required. */
 void phx_staging_teardown(phxfs_mmap_buffer_t *pb);

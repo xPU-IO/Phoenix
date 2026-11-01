@@ -256,8 +256,9 @@ static int __phxfs_open(const char *dev_path, phxfs_mmap_buffer_t *mbuffer,
     mbuffer->bdev_fd = open(dev_path, O_RDWR);
 
     if (mbuffer->bdev_fd == -1) {
-        printf("failed to open file %s\n", dev_path);
-        return -1;
+        int rc = -errno;
+        fprintf(stderr, "failed to open file %s: %d\n", dev_path, rc);
+        return rc;
     }
     mbuffer->head = NULL;
     mbuffer->device_id = device_id;
@@ -271,6 +272,29 @@ static int __phxfs_open(const char *dev_path, phxfs_mmap_buffer_t *mbuffer,
     mbuffer->staging_size = 0;
     mbuffer->init_stat = true;
     return 0;
+}
+
+/* g_open_lock is held; no other open may join this initialization. */
+static void phx_prepare_host(phxfs_mmap_buffer_t *pb, int deviceID) {
+    pb->bdev_fd = -1;
+    pb->device_id = deviceID;
+    pb->phxfs_device_id = -1;
+    pb->closing = false;
+    pb->active_ops = 0;
+    pb->map_mode = PHX_MAP_MODE_HOST;
+    pb->staging_raw = NULL;
+    pb->staging_dptr = NULL;
+    pb->staging_host = NULL;
+    pb->staging_size = 0;
+    pb->init_stat = true;
+    pb->open_count = 1;
+    phxfs_initialized[deviceID] = true;
+}
+
+static bool phx_direct_unavailable(int rc, bool mapping_rejected = false) {
+    return rc == -ENOENT || rc == -ENODEV || rc == -ENXIO ||
+           rc == -EOPNOTSUPP || rc == -ENOSYS ||
+           (rc == -EINVAL && mapping_rejected);
 }
 
 static int phx_open_finish(int deviceID, phxfs_mmap_buffer_t *pb);
@@ -308,25 +332,17 @@ int phxfs_open(int deviceID) {
             phxfs_device_id < (int)phxfs_dev_path.size()) {
             ret = __phxfs_open(phxfs_dev_path[phxfs_device_id].c_str(), pb,
                                deviceID, phxfs_device_id);
+            if (ret != 0 && phx_host_mode_auto() && phx_direct_unavailable(ret)) {
+                phx_prepare_host(pb, deviceID);
+                ret = 0;
+            }
             if (ret == 0) {
                 pb->open_count = 1;
                 phxfs_initialized[deviceID] = true;
                 fresh_open = true;
             }
         } else if (phx_host_mode_requested()) {
-            pb->bdev_fd = -1;
-            pb->device_id = deviceID;
-            pb->phxfs_device_id = -1;
-            pb->closing = false;
-            pb->active_ops = 0;
-            pb->map_mode = PHX_MAP_MODE_HOST;
-            pb->staging_raw = NULL;
-            pb->staging_dptr = NULL;
-            pb->staging_host = NULL;
-            pb->staging_size = 0;
-            pb->init_stat = true;
-            pb->open_count = 1;
-            phxfs_initialized[deviceID] = true;
+            phx_prepare_host(pb, deviceID);
             fresh_open = true;
             fprintf(stderr,
                     "phxfs_open: CUDA device %d using host staging mode (PHXFS_MODE=%s)\n",
@@ -358,52 +374,39 @@ int phxfs_open(int deviceID) {
  * the device is torn down again and a negative errno returned.
  */
 static int phx_open_finish(int deviceID, phxfs_mmap_buffer_t *pb) {
+    int rc = 0;
+    bool mapping_rejected = false;
+    const char *stage = nullptr;
     if (phx_host_mode_auto() && pb->map_mode == PHX_MAP_MODE_FULL) {
-        int probe = phx_probe_direct_device(deviceID);
-        if (probe != 0) {
-            fprintf(stderr,
-                    "phxfs_open: direct probe failed on CUDA device %d (%d); "
-                    "using host staging fallback\n", deviceID, probe);
-            phx_open_abort(pb, deviceID);
-            pthread_mutex_lock(&g_open_lock);
-            pb->bdev_fd = -1;
-            pb->device_id = deviceID;
-            pb->phxfs_device_id = -1;
-            pb->closing = false;
-            pb->active_ops = 0;
-            pb->map_mode = PHX_MAP_MODE_HOST;
-            pb->staging_raw = NULL;
-            pb->staging_dptr = NULL;
-            pb->staging_host = NULL;
-            pb->staging_size = 0;
-            pb->init_stat = true;
-            pb->open_count = 1;
-            phxfs_initialized[deviceID] = true;
-            pthread_mutex_unlock(&g_open_lock);
-        }
+        stage = "direct probe";
+        rc = phx_probe_direct_device(deviceID);
+    }
+    if (rc == 0 && pb->map_mode == PHX_MAP_MODE_STAGING) {
+        stage = "staging setup";
+        rc = phx_staging_setup(deviceID, &mapping_rejected);
     }
 
+    if (rc != 0) {
+        bool fallback = phx_host_mode_auto() && phx_direct_unavailable(rc, mapping_rejected);
+        fprintf(stderr, "phxfs_open: %s failed on CUDA device %d: %d%s\n",
+                stage, deviceID, rc, fallback ? "; using host staging fallback" : "");
+        phx_open_abort(pb, deviceID);
+        if (!fallback)
+            return rc;
+        /* opening stays set across rollback and replacement of the resources. */
+        pthread_mutex_lock(&g_open_lock);
+        phx_prepare_host(pb, deviceID);
+        pthread_mutex_unlock(&g_open_lock);
+    }
     if (pb->map_mode == PHX_MAP_MODE_HOST) {
-        int src = phx_host_staging_setup(deviceID);
-        if (src != 0) {
+        rc = phx_host_staging_setup(deviceID);
+        if (rc != 0) {
             fprintf(stderr, "phxfs_open: host staging setup failed on CUDA device %d: %d\n",
-                    deviceID, src);
+                    deviceID, rc);
             phx_open_abort(pb, deviceID);
-            return src;
         }
     }
-
-    if (pb->map_mode == PHX_MAP_MODE_STAGING) {
-        int src = phx_staging_setup(deviceID);
-        if (src != 0) {
-            fprintf(stderr, "phxfs_open: staging setup failed on CUDA device %d: %d\n",
-                    deviceID, src);
-            phx_open_abort(pb, deviceID);
-            return src;
-        }
-    }
-
-    return 0;
+    return rc;
 }
 
 int phxfs_find_dev(int device_id) {
