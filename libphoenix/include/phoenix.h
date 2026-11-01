@@ -112,7 +112,10 @@ typedef struct phxfs_io_req {
     off_t    buf_offset;  /* byte offset within buf */
     size_t   nbytes;      /* transfer length */
     off_t    f_offset;    /* file offset */
-    ssize_t  result;      /* OUT: bytes transferred, or negative errno */
+    ssize_t  result;      /* OUT: bytes transferred, or negative errno.
+                          * HOST split requests report successful byte totals
+                          * (negative errno if none). A short total need not
+                          * describe a contiguous prefix. */
 } phxfs_io_req_t;
 
 /*

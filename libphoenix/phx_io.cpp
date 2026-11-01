@@ -358,6 +358,7 @@ struct host_worker_state {
 
 struct host_slice {
     int first_req = -1;
+    size_t first_req_offset = 0;
     int req_count = 0;
     int device_id = -1;
     int fd = -1;
@@ -456,19 +457,18 @@ static int host_batch_finalize(host_batch_ctx *bc) {
         ssize_t op_result = bc->ops[k].result;
         size_t done = op_result > 0
             ? std::min((size_t)op_result, slice.bytes) : 0;
-        size_t remaining = done;
-        for (int j = 0; j < slice.req_count && remaining > 0; j++) {
+        size_t consumed = 0;
+        for (int j = 0; j < slice.req_count; j++) {
             phxfs_io_req_t &req = bc->reqs[slice.first_req + j];
-            size_t add = std::min(remaining, req.nbytes);
-            req.result = (req.result > 0 ? req.result : 0) + (ssize_t)add;
-            remaining -= add;
-        }
-        if (op_result < 0) {
-            for (int j = 0; j < slice.req_count; j++) {
-                phxfs_io_req_t &req = bc->reqs[slice.first_req + j];
-                if (req.result == 0)
-                    req.result = op_result;
-            }
+            size_t offset = j == 0 ? slice.first_req_offset : 0;
+            size_t span = std::min(req.nbytes - offset, slice.bytes - consumed);
+            size_t add = done > consumed ? std::min(done - consumed, span) : 0;
+            /* Preserve upstream successful-byte accounting after a failed slice. */
+            if (add)
+                req.result = (req.result > 0 ? req.result : 0) + (ssize_t)add;
+            else if (op_result < 0 && req.result == 0)
+                req.result = op_result;
+            consumed += span;
         }
     }
 
@@ -540,6 +540,7 @@ static int host_batch_prepare(phxfs_io_req_t *reqs, int n,
             } else {
                 host_slice slice;
                 slice.first_req = i;
+                slice.first_req_offset = off;
                 slice.req_count = 1;
                 slice.device_id = d;
                 slice.fd = reqs[i].fd;

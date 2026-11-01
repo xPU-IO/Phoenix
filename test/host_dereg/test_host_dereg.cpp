@@ -1,5 +1,5 @@
 // Same production lifecycle and test for CPU mocks and the CUDA connector.
-// memfd stores only 4 KiB in memory: no filesystem/disk benchmark or module.
+// memfd uses RAM only: 4 KiB for lifetime tests, 24 MiB plus guards for merged tails.
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
@@ -8,6 +8,7 @@
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <vector>
 #include <sys/mman.h>
 #include <unistd.h>
 #include "phoenix.h"
@@ -229,6 +230,63 @@ static void cancel_staging_scenario(int fd, void *gpu) {
     mbuffer[0].map_mode = PHX_MAP_MODE_HOST;
 }
 
+// A=20 MiB and B=4 MiB produce a 16 MiB slice and an 8 MiB merged tail.
+// Use the existing HOST connector and copy gates, not device_id=-1 CPU I/O.
+static void merged_tail(bool write, bool async) {
+    constexpr size_t mib = 1024 * 1024, first = 20 * mib, second = 4 * mib;
+    constexpr size_t guard = 4096, total = first + second + 2 * guard;
+    std::vector<unsigned char> expected(total, 0xa5), initial(total, 0xa5), actual(total);
+    for (size_t i = 0; i < first + second; ++i) {
+        expected[guard + i] = (unsigned char)(1 + (i % 113) + 23 * (i / (4 * mib)));
+        initial[guard + i] = 0;
+    }
+    void *gpu = nullptr, *target = nullptr;
+    require(devconn->mem_alloc(0, total, &gpu) == 0, "allocate merged-tail buffer");
+    require(phxfs_regmem(0, gpu, total, &target) == 0, "register merged-tail buffer");
+    int fd = memfd_create("phoenix-host-merged-tail", MFD_CLOEXEC);
+    require(fd >= 0, "create merged-tail memfd");
+    const auto &file_seed = write ? initial : expected;
+    const auto &gpu_seed = write ? expected : initial;
+    require(pwrite(fd, file_seed.data(), total, 0) == (ssize_t)total, "reset file including guards");
+    real_h2d = devconn->memcpy_h2d;
+    real_d2h = devconn->memcpy_d2h;
+    require(real_h2d(gpu, gpu_seed.data(), total) == 0, "reset device including guards");
+    copies_entered = 0;
+    hold_copy = false;
+    devconn->memcpy_h2d = h2d;
+    devconn->memcpy_d2h = d2h;
+    phxfs_io_req_t reqs[2]{};
+    for (int i = 0; i < 2; ++i) {
+        reqs[i].fd = fd;
+        reqs[i].device_id = 0;
+        reqs[i].buf = gpu;
+        reqs[i].buf_offset = reqs[i].f_offset = guard + (i ? first : 0);
+        reqs[i].nbytes = i ? second : first;
+    }
+    int rc;
+    if (async) {
+        auto *h = write ? phxfs_batch_submit_write(reqs, 2) : phxfs_batch_submit_read(reqs, 2);
+        require(h != nullptr, "submit merged-tail HOST batch");
+        rc = phxfs_batch_wait(h);
+    } else {
+        rc = write ? phxfs_write_batch(reqs, 2) : phxfs_read_batch(reqs, 2);
+    }
+    printf("merged-tail rc=%d A=%zd B=%zd copies=%d\n", rc, reqs[0].result, reqs[1].result, copies_entered);
+    check(rc == 0, "merged-tail batch succeeds");
+    check(reqs[0].result == (ssize_t)first, "A reports exactly 20 MiB");
+    check(reqs[1].result == (ssize_t)second, "B reports exactly 4 MiB");
+    check(copies_entered == 2, "HOST callbacks execute two coalesced slices");
+    require(real_d2h(actual.data(), gpu, total) == 0, "read back device");
+    check(actual == expected, "device data and both guards");
+    require(pread(fd, actual.data(), total, 0) == (ssize_t)total, "read back file");
+    check(actual == expected, "file data and both guards");
+    devconn->memcpy_h2d = real_h2d;
+    devconn->memcpy_d2h = real_d2h;
+    require(phxfs_deregmem(0, gpu, total) == 0, "deregister merged-tail buffer");
+    devconn->mem_free(gpu);
+    close(fd);
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     alarm(40);
@@ -238,6 +296,11 @@ int main(int argc, char **argv) {
     require(strcmp(phxfs_io_engine_name(), engine) == 0, "requested engine active (no silent fallback)");
     require(devconn->set_device(0) == 0, "select allocated device ordinal 0");
     require(phxfs_open(0) == 0 && phxfs_get_map_mode(0) == PHX_MAP_MODE_HOST, "open HOST");
+    if (argc == 5 && strcmp(argv[2], "merged-tail") == 0) {
+        merged_tail(strcmp(argv[3], "write") == 0, strcmp(argv[4], "async") == 0);
+        check(phxfs_close(0) == 0, "close merged-tail device");
+        return failures ? 1 : 0;
+    }
     void *gpu = nullptr;
     require(devconn->mem_alloc(0, bytes, &gpu) == 0, "allocate device/mock buffer");
     unsigned char seed[bytes];
