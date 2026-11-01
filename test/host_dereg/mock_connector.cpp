@@ -22,6 +22,7 @@ int devconn_init() {
     ops.host_alloc = allocate;
     ops.host_free = free;
     ops.set_device = set_device;
+    ops.validate_device = set_device;
     ops.memcpy_h2d = copy;
     ops.memcpy_d2h = copy;
     return 0;

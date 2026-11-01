@@ -120,6 +120,14 @@ static int amd_find_device(int hip_gpu_id)
 /* ------------------------------------------------------------------ */
 
 /* Reverse of find_device: phxfs index -> HIP device id. */
+static int amd_validate_device(int device_id)
+{
+    int count = 0;
+    if (hipGetDeviceCount(&count) != hipSuccess)
+        return -EIO;
+    return device_id >= 0 && device_id < count ? 0 : -ENODEV;
+}
+
 static int amd_set_device(int device_id)
 {
     int n_gpus = 0;
@@ -386,6 +394,7 @@ static struct devconn_ops amd_devconn = {
     .memcpy_dtod_on_stream = amd_memcpy_dtod_on_stream,
     .range_push   = NULL,
     .range_pop    = NULL,
+    .validate_device = amd_validate_device,
 };
 
 /* The global connector — referenced by core code via extern */

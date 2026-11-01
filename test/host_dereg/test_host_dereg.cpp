@@ -229,6 +229,34 @@ static void cancel_staging_scenario(int fd, void *gpu) {
     mbuffer[0].map_mode = PHX_MAP_MODE_HOST;
 }
 
+static int allocations;
+static int (*real_host_alloc)(size_t, void **);
+static int counted_host_alloc(size_t n, void **p) {
+    ++allocations;
+    return real_host_alloc(n, p);
+}
+
+// CPU connector exposes only ordinal 0. Run discovery and open separately so
+// a discovery failure cannot short-circuit the allocation check.
+static int open_scenario(const char *mode, bool valid) {
+    setenv("PHXFS_MODE", mode, 1);
+    real_host_alloc = devconn->host_alloc;
+    devconn->host_alloc = counted_host_alloc;
+    int id = valid ? 0 : 1;
+    int found = phxfs_find_dev(id);
+    int opened = phxfs_open(id);
+    printf("open-check mode=%s id=%d find=%d open=%d allocations=%d\n",
+           mode, id, found, opened, allocations);
+    check(found == (valid ? id : -1), "visible ordinal discovery");
+    check(opened == (valid ? 0 : -ENODEV), "visible ordinal open");
+    check(valid ? allocations > 0 : allocations == 0,
+          "invalid ordinal is rejected before HOST allocation");
+    if (opened == 0)
+        check(phxfs_close(id) == 0, "close opened device");
+    devconn->host_alloc = real_host_alloc;
+    return failures ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     alarm(40);
@@ -236,6 +264,8 @@ int main(int argc, char **argv) {
     setenv("PHXFS_MODE", "host_staging", 1);
     setenv("PHXFS_IO_ENGINE", engine, 1);
     require(strcmp(phxfs_io_engine_name(), engine) == 0, "requested engine active (no silent fallback)");
+    if (argc == 5 && strcmp(argv[2], "open") == 0)
+        return open_scenario(argv[3], strcmp(argv[4], "valid") == 0);
     require(devconn->set_device(0) == 0, "select allocated device ordinal 0");
     require(phxfs_open(0) == 0 && phxfs_get_map_mode(0) == PHX_MAP_MODE_HOST, "open HOST");
     void *gpu = nullptr;
