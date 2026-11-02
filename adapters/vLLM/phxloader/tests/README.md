@@ -20,7 +20,7 @@ This test suite covers **88 tests** across three tiers:
 | Python environment | phxloader extension installed (`bash install.sh`) |
 | libphoenix.so | `/usr/local/lib/libphoenix.so` (latest version with 6-param `phxfs_read`) |
 | Device | Required for hardware tests (e.g. 8× H20) |
-| phxfs device | `/dev/phxfs_dev0` (required for hardware tests) |
+| phxfs device | `/dev/phxfs_dev` (required for hardware tests) |
 | pytest | ≥ 7.0 |
 
 ## How to Run

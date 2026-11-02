@@ -1,7 +1,6 @@
 #include <asm/page.h>
 #include <linux/version.h>
-#include <linux/cdev.h>
-#include <linux/ctype.h> //for isdigit()
+#include <linux/miscdevice.h>
 #include <linux/device.h>
 #include <linux/fcntl.h>
 #include <linux/fdtable.h>
@@ -32,9 +31,7 @@
 
 #include "phxfs-backend.h"
 
-static DEFINE_IDA(phxfs_chr_minor_ida);
-static dev_t phxfs_chr_devt;
-static struct class *phxfs_chr_class;
+static struct class *phxfs_metadata_class;
 
 struct phxfs_ctrl ctrl;
 
@@ -154,35 +151,6 @@ static int phxfs_compute_bar_segments(
 	kfree(block_skip);
 	*out_segments = segs;
 	return s;
-}
-
-int extract_trailing_number(const char str[]) {
-	int number = 0;
-	int multiplier = 1;
-	size_t len;
-	int found_digit = 0;
-	int i;
-	len = strlen(str);
-
-	for (i = len - 1; i >= 0; --i) {
-		if (isdigit(str[i])) {
-			number += (str[i] - '0') * multiplier;
-			found_digit = 1;
-			if (multiplier == 1) {
-				multiplier = 10;
-			} else if (found_digit) {
-				break;
-			}
-		} else if (found_digit) {
-			break;
-		}
-	}
-
-	if (found_digit) {
-		return number;
-	} else {
-		return -1;
-	}
 }
 
 static int phxfs_devm_memremap(struct phxfs_dev *phx_dev) {
@@ -643,8 +611,7 @@ static int phxfs_remap_span_locked(struct phxfs_dev *phx_dev, u64 phys_start,
 	phx_dev->segments[ins].refcount = 0;   /* caller takes the reference */
 	phx_dev->segments[ins].p2p_pgmap = p2p_pgmap;
 	phx_dev->num_segments++;
-	/* Legacy compat field: keep it pointing at a pgmap owned by segments[],
-	 * so phxfs_cdev_del() does not free it twice. */
+	/* Legacy field aliases a pgmap owned by segments[], never a second owner. */
 	phx_dev->p2p_pgmap = phx_dev->segments[0].p2p_pgmap;
 	phx_dev->remap = 1;
 
@@ -795,7 +762,7 @@ static void seg_unmap_locked(struct phxfs_dev *dev, int idx)
 				sizeof(dev->segments[0]));
 	dev->num_segments--;
 
-	/* Legacy compat field must never dangle (phxfs_cdev_del() reads it). */
+	/* Keep the legacy pgmap alias valid during device teardown. */
 	dev->p2p_pgmap = dev->num_segments ? dev->segments[0].p2p_pgmap : NULL;
 	if (dev->num_segments == 0)
 		dev->remap = 0;
@@ -1009,62 +976,40 @@ err_cleanup:
 	return ret;
 }
 
-static int phxfs_open(struct inode *inode, struct file *filp) {
-	int ret = 0;
-	int dev_idx;
-	char *file_name;
-
-	if (WARN_ON(!filp))
-		return -EINVAL;
-
-	file_name = filp->f_path.dentry->d_iname; 
-
-	if (file_name != NULL) {
-		dev_idx = extract_trailing_number(file_name);
-		phxfs_info("phxfs_open %s, npu_idx is %d\n", file_name, dev_idx);
-		if (dev_idx < 0 || dev_idx >= ctrl.dev_num) {
-			ret = -ENODEV;
-			goto out;
-		}
-		filp->private_data = &ctrl.phx_dev[dev_idx];
-	}
-out:
-	phxfs_info("phxfs_open %d\n", ret);
-	return ret;
-}
-
-static int phxfs_release(struct inode *inode, struct file *filp) { return 0; }
-
 static long phxfs_ioctl(struct file *filp, unsigned int cmd,
                         unsigned long arg) {
-	void __user *argp = (void *)arg;
-	switch (cmd) {
-		case PHXFS_IOCTL_MAP: {
-			struct phxfs_ioctl_map_s map_param;
-			if (copy_from_user(&map_param, argp, sizeof(struct phxfs_ioctl_map_s)))
-				return -EFAULT;
-			return phxfs_map_dev_addr(filp, &map_param, map_param.n_vaddr, map_param.n_size,
-									map_param.c_vaddr, map_param.c_size);
-		}
-		case PHXFS_IOCTL_UNMAP: {
-			struct phxfs_ioctl_map_s map_param;
-			if (copy_from_user(&map_param, argp, sizeof(struct phxfs_ioctl_map_s)))
-				return -EFAULT;
-			phxfs_map_dev_release(filp, &map_param, map_param.n_vaddr, map_param.n_size,
-								map_param.c_vaddr, map_param.c_size);
-			return 0;
-		}
-		default:
-			return -ENOTTY;
-	}
+	unsigned int gpu = _IOC_NR(cmd) >> PHXFS_IOCTL_GPU_SHIFT;
+	struct phxfs_ioctl_map_s map_param;
+	struct phxfs_dev *dev;
+
+	if (cmd != PHXFS_IOCTL_MAP_GPU(gpu) && cmd != PHXFS_IOCTL_UNMAP_GPU(gpu))
+		return -ENOTTY;
+	if (gpu >= (unsigned int)ctrl.dev_num)
+		return -ENODEV;
+	dev = &ctrl.phx_dev[gpu];
+	if (!dev->dev)
+		return -ENODEV;
+	if (copy_from_user(&map_param, (void __user *)arg, sizeof(map_param)))
+		return -EFAULT;
+	if (cmd == PHXFS_IOCTL_MAP_GPU(gpu))
+		return phxfs_map_dev_addr(dev, &map_param, map_param.n_vaddr,
+				map_param.n_size, map_param.c_vaddr, map_param.c_size);
+	phxfs_map_dev_release(dev, &map_param, map_param.n_vaddr,
+			map_param.n_size, map_param.c_vaddr, map_param.c_size);
+	return 0;
 }
 
 static const struct file_operations phxfs_chr_fops = {
     .owner = THIS_MODULE,
-    .open = phxfs_open,
-    .release = phxfs_release,
     .unlocked_ioctl = phxfs_ioctl,
     .mmap = phxfs_mmap,
+};
+
+static struct miscdevice phxfs_device = {
+	.minor = MISC_DYNAMIC_MINOR,
+	.name = "phxfs_dev",
+	.fops = &phxfs_chr_fops,
+	.mode = 0666,
 };
 
 static ssize_t pci_bdf_show(struct device *cdev_device,
@@ -1116,113 +1061,62 @@ static ssize_t page_size_show(struct device *cdev_device,
 }
 static DEVICE_ATTR_RO(page_size);
 
-static void phxfs_cdev_remove_node(struct cdev *cdev,
-				   struct device *cdev_device, int idx)
-{
-	device_remove_file(cdev_device, &dev_attr_pci_bdf);
-	device_remove_file(cdev_device, &dev_attr_map_mode);
-	device_remove_file(cdev_device, &dev_attr_page_size);
-	cdev_device_del(cdev, cdev_device);
-	ida_simple_remove(&phxfs_chr_minor_ida, idx);
-}
+static struct attribute *phxfs_metadata_attrs[] = {
+	&dev_attr_pci_bdf.attr,
+	&dev_attr_map_mode.attr,
+	&dev_attr_page_size.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(phxfs_metadata);
 
-void phxfs_cdev_del(struct cdev *cdev, struct device *cdev_device,
-                    struct phxfs_dev *dev) {
-	if (WARN_ON(!cdev || !cdev_device || !dev))
-		return;
+static void phxfs_metadata_cleanup(struct phxfs_ctrl *dev_ctrl) {
+	int i;
 
-	phxfs_cdev_remove_node(cdev, cdev_device, dev->idx);
-	phxfs_dev_unmap(dev);
-	pci_dev_put(dev->dev);
-	dev->dev = NULL;
-}
+	for (i = dev_ctrl->dev_num - 1; i >= 0; i--) {
+		struct phxfs_dev *dev = &dev_ctrl->phx_dev[i];
 
-int phxfs_cdev_add(struct cdev *cdev, struct device *cdev_device,
-                   const struct file_operations *fops, struct module *owner,
-                   struct phxfs_dev *dev) {
-	int ret;
-	ret = ida_simple_get(&phxfs_chr_minor_ida, 0, MAX_DEV_NUM, GFP_KERNEL);
-	if (ret < 0)
-		return ret;
-	dev->idx = ret;
-	ret = dev_set_name(cdev_device, "phxfs_dev%d", dev->idx);
-	if (ret) {
-		ida_simple_remove(&phxfs_chr_minor_ida, dev->idx);
-		return ret;
-	}
-	cdev_device->devt = MKDEV(MAJOR(phxfs_chr_devt), dev->idx);
-	cdev_device->class = phxfs_chr_class;
-	device_initialize(cdev_device);
-	cdev_init(cdev, fops);
-	cdev->owner = owner;
-	ret = cdev_device_add(cdev, cdev_device);
-	if (ret) {
-		ida_simple_remove(&phxfs_chr_minor_ida, dev->idx);
-		return ret;
-	}
-	dev_set_drvdata(cdev_device, dev);
-	ret = device_create_file(cdev_device, &dev_attr_pci_bdf);
-	if (ret) {
-		cdev_device_del(cdev, cdev_device);
-		ida_simple_remove(&phxfs_chr_minor_ida, dev->idx);
-		return ret;
-	}
-	ret = device_create_file(cdev_device, &dev_attr_map_mode);
-	if (ret) {
-		device_remove_file(cdev_device, &dev_attr_pci_bdf);
-		cdev_device_del(cdev, cdev_device);
-		ida_simple_remove(&phxfs_chr_minor_ida, dev->idx);
-		return ret;
-	}
-	ret = device_create_file(cdev_device, &dev_attr_page_size);
-	if (ret) {
-		device_remove_file(cdev_device, &dev_attr_map_mode);
-		device_remove_file(cdev_device, &dev_attr_pci_bdf);
-		cdev_device_del(cdev, cdev_device);
-		ida_simple_remove(&phxfs_chr_minor_ida, dev->idx);
-	}
-	return ret;
-}
-
-int phxfs_cdev_init(struct phxfs_ctrl *ctrl) {
-	int ret = -ENOMEM;
-	int i, j;
-
-	if (!ctrl)
-		return -EINVAL;
-
-	ret = alloc_chrdev_region(&phxfs_chr_devt, 0, ctrl->dev_num,
-								"phxfs-generic");
-	if (ret < 0)
-		return ret;
-#ifdef CLASS_CREATE_HAS_TWO_PARAMS
-  	phxfs_chr_class = class_create(THIS_MODULE, "phxfs-generic");
-#else
-  	phxfs_chr_class = class_create("phxfs-generic");
-#endif
-	if (IS_ERR(phxfs_chr_class)) {
-		ret = PTR_ERR(phxfs_chr_class);
-		goto unregister_generic_phxfs;
-	}
-	for (i = 0; i < ctrl->dev_num; i++) {
-		ret = phxfs_cdev_add(&ctrl->phx_dev[i].cdev, &ctrl->phx_dev[i].device,
-								&phxfs_chr_fops, THIS_MODULE, &ctrl->phx_dev[i]);
-		if (ret) {
-			for (j = i - 1; j >= 0; j--)
-				phxfs_cdev_remove_node(&ctrl->phx_dev[j].cdev,
-						       &ctrl->phx_dev[j].device,
-						       ctrl->phx_dev[j].idx);
-			goto destroy_subsys_class;
+		if (dev->metadata) {
+			device_unregister(dev->metadata);
+			dev->metadata = NULL;
 		}
 	}
-	phxfs_info("phxfs_cdev_init success!\n");
-	return 0;
+	class_destroy(phxfs_metadata_class);
+	phxfs_metadata_class = NULL;
+}
 
-destroy_subsys_class:
-	class_destroy(phxfs_chr_class);
+static int phxfs_devices_register(struct phxfs_ctrl *dev_ctrl) {
+	int i, ret;
 
-unregister_generic_phxfs:
-	unregister_chrdev_region(phxfs_chr_devt, ctrl->dev_num);
+#ifdef CLASS_CREATE_HAS_TWO_PARAMS
+	phxfs_metadata_class = class_create(THIS_MODULE, "phxfs-generic");
+#else
+	phxfs_metadata_class = class_create("phxfs-generic");
+#endif
+	if (IS_ERR(phxfs_metadata_class)) {
+		ret = PTR_ERR(phxfs_metadata_class);
+		phxfs_metadata_class = NULL;
+		return ret;
+	}
+	for (i = 0; i < dev_ctrl->dev_num; i++) {
+		struct phxfs_dev *dev = &dev_ctrl->phx_dev[i];
+
+		/* Zero devt publishes metadata only, never /dev/phxfs_devN. */
+		dev->metadata = device_create_with_groups(phxfs_metadata_class,
+				NULL, MKDEV(0, 0), dev, phxfs_metadata_groups,
+				"phxfs_dev%d", dev->idx);
+		if (IS_ERR(dev->metadata)) {
+			ret = PTR_ERR(dev->metadata);
+			dev->metadata = NULL;
+			goto cleanup;
+		}
+	}
+
+	/* Publish the only character node after all fallible GPU setup. */
+	ret = misc_register(&phxfs_device);
+	if (!ret)
+		return 0;
+cleanup:
+	phxfs_metadata_cleanup(dev_ctrl);
 	return ret;
 }
 
@@ -1305,7 +1199,7 @@ static int __init phxfs_init(void) {
 		phxfs_err("npu_ctrl_init error:%d\n", ret);
 		goto err_backend;
 	}
-	ret = phxfs_cdev_init(&ctrl);
+	ret = phxfs_devices_register(&ctrl);
 	if (ret) {
 		phxfs_err("phxfs_init error!\n");
 		phxfs_ctrl_cleanup(&ctrl, ctrl.dev_num);
@@ -1320,16 +1214,11 @@ err_backend:
 }
 
 static void __exit phxfs_exit(void) {
-	int i;
-	for (i = 0; i < ctrl.dev_num; i++) {
-		phxfs_cdev_del(&ctrl.phx_dev[i].cdev, &ctrl.phx_dev[i].device, &ctrl.phx_dev[i]);
-	}
-
+	misc_deregister(&phxfs_device);
+	phxfs_metadata_cleanup(&ctrl);
+	phxfs_ctrl_cleanup(&ctrl, ctrl.dev_num);
+	ctrl.dev_num = 0;
 	phxfs_p2p_backend_exit();
-
-	class_destroy(phxfs_chr_class);
-	unregister_chrdev_region(phxfs_chr_devt, ctrl.dev_num);
-	ida_destroy(&phxfs_chr_minor_ida);
 
 	phxfs_info("Good bye!\n");
 }

@@ -68,7 +68,6 @@ set (NVIDIA "" CACHE PATH "Path to Nvidia driver source")
 set (KERNEL "/lib/modules/${CMAKE_SYSTEM_VERSION}/build" CACHE PATH "Path to kernel source, or module directory")
 
 set (nvidia_archs "90" CACHE STRING "NVIDIA compute architectures (SM90 covers Hopper/Grace Hopper)")
-set (no_module false CACHE BOOL "Do not build kernel module")
 set (BUILD_SHARED_LIBS true CACHE BOOL "Build shared library, set to false for static")
 # Default BAR mapping mode baked into phoenixfs.ko: "staging" (default) or
 # "full". Still overridable at load time via the phxfs_map_mode module param.
@@ -184,13 +183,11 @@ else ()
 	set (PHXFS_MAP_MODE_DEFAULT 1)
 endif ()
 set (module_ccflags "${module_ccflags} -DPHXFS_MAP_MODE_DEFAULT=${PHXFS_MAP_MODE_DEFAULT}")
-if (NOT no_module)
 configure_file ("${module_root}/Makefile.in" "${module_output}/Makefile" @ONLY)
 message (STATUS "Configuring module build in ${module_output}")
 
 add_custom_target(
     modules
-    ALL
     COMMAND make
     WORKING_DIRECTORY ${module_output}
     COMMENT "Building kernel module"
@@ -233,7 +230,6 @@ add_custom_target(
     WORKING_DIRECTORY ${module_output}
     COMMENT "Removing kernel module"
 )
-endif ()
 
 
 # Library source files
@@ -288,17 +284,17 @@ if (LIBURING_FOUND)
     target_link_directories(libphoenix PRIVATE ${LIBURING_LIBRARY_DIRS})
     target_link_libraries(libphoenix ${LIBURING_LIBRARIES})
 endif ()
-# Set install locations
+# Default installation includes only the user library and headers.
 install (FILES ${libphoenix_include} DESTINATION "include")
 install (TARGETS libphoenix DESTINATION "lib")
-# Also install the phoenixfs kernel module into the running kernel's module
-# tree (/lib/modules/$(uname -r)/extra) + depmod. A failure here (e.g. missing
-# root or a mismatched kernel tree) only warns — it must not abort the library
-# install above. Run `sudo make install` for a system-path install.
-install (CODE "execute_process (COMMAND make -C ${module_output} install RESULT_VARIABLE _phx_mod_install_res)
-	if (NOT _phx_mod_install_res EQUAL 0)
-		message (WARNING \"phoenixfs.ko was not installed (see output above). libphoenix was still installed.\")
-	endif ()")
+add_custom_target(
+    with_module
+    COMMAND make install
+    WORKING_DIRECTORY "${module_output}"
+    DEPENDS modules
+    COMMENT "Installing the explicitly requested kernel module"
+    VERBATIM
+)
 
 
 # Make target depend on pthreads

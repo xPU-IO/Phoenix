@@ -58,7 +58,13 @@ union phxfs_ioctl_para_s {
 typedef union phxfs_ioctl_para_s phxfs_ioctl_para_t;
 
 #define PHXFS_IOCTL 0x88 /* 0x4c */
-#define PHXFS_IOCTL_MAP   _IOW(PHXFS_IOCTL, 1, struct phxfs_ioctl_map_s)
-#define PHXFS_IOCTL_UNMAP _IOW(PHXFS_IOCTL, 2, struct phxfs_ioctl_map_s)
+/* The 8-bit ioctl number contains GPU index (high 4) and operation (low 4).
+ * mmap reserves an unbound VMA at offset 0; the first MAP attempt binds it. */
+#define PHXFS_IOCTL_GPU_SHIFT 4
+#define PHXFS_IOCTL_GPU_LIMIT (1U << (_IOC_NRBITS - PHXFS_IOCTL_GPU_SHIFT))
+#define PHXFS_IOCTL_MAP_GPU(gpu) _IOW(PHXFS_IOCTL, ((gpu) << PHXFS_IOCTL_GPU_SHIFT) | 1U, struct phxfs_ioctl_map_s)
+#define PHXFS_IOCTL_UNMAP_GPU(gpu) _IOW(PHXFS_IOCTL, ((gpu) << PHXFS_IOCTL_GPU_SHIFT) | 2U, struct phxfs_ioctl_map_s)
+#define PHXFS_IOCTL_MAP PHXFS_IOCTL_MAP_GPU(0)
+#define PHXFS_IOCTL_UNMAP PHXFS_IOCTL_UNMAP_GPU(0)
 
 #endif

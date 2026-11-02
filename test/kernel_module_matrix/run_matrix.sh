@@ -164,14 +164,16 @@ check_load() {   # expected mode name
     [ "$(mod_mode)" = "$(mode_num "$want")" ] || { echo "phxfs_map_mode=$(mod_mode), want $want"; bad=1; }
     local gpus; gpus=$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader 2>/dev/null |
                        while read -r b; do norm_bdf "$b"; echo; done)
-    for d in /sys/class/phxfs-generic/phxfs_dev*; do
+    [ -c /dev/phxfs_dev ] || { echo "missing char device /dev/phxfs_dev"; bad=1; }
+    for d in /dev/phxfs_dev[0-9]*; do
+        [ ! -c "$d" ] || { echo "unexpected legacy char device $d"; bad=1; }
+    done
+    for d in /sys/class/phxfs-generic/phxfs_dev[0-9]*; do
         [ -d "$d" ] || continue
         n=$((n + 1))
-        local node=/dev/${d##*/}
         bdf=$(cat "$d/pci_bdf" 2>/dev/null); m=$(cat "$d/map_mode" 2>/dev/null)
         p=$(cat "$d/page_size" 2>/dev/null)
         echo "  ${d##*/}: bdf=$bdf map_mode=$m page_size=$p"
-        [ -c "$node" ] || { echo "  missing char device $node"; bad=1; }
         [ "$m" = "$(mode_num "$want")" ] || { echo "  map_mode mismatch"; bad=1; }
         [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 4096 ] && [ $((p & (p - 1))) -eq 0 ] ||
             { echo "  bad page_size"; bad=1; }
@@ -185,7 +187,7 @@ check_load() {   # expected mode name
        [ "$want_n" -gt 0 ] && [ "$n" -ne "$want_n" ]; then
         echo "  $n phxfs devices for $want_n GPUs"; bad=1
     fi
-    echo "  devices=$n refcnt=$(refcnt)"
+    echo "  node=/dev/phxfs_dev gpu_metadata=$n refcnt=$(refcnt)"
     return $bad
 }
 

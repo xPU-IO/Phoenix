@@ -4,6 +4,7 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <fcntl.h>
 #include <fstream>
 #include <pthread.h>
@@ -19,12 +20,7 @@
 int g_device_count = PHXFS_MAX_DEVICES;
 phxfs_mmap_buffer_t mbuffer[PHXFS_MAX_DEVICES];
 
-static std::vector<std::string> phxfs_dev_path = {
-    "/dev/phxfs_dev0", "/dev/phxfs_dev1",
-    "/dev/phxfs_dev2", "/dev/phxfs_dev3",
-    "/dev/phxfs_dev4", "/dev/phxfs_dev5",
-    "/dev/phxfs_dev6", "/dev/phxfs_dev7"
-};
+static const char *const phxfs_dev_path = "/dev/phxfs_dev";
 
 static std::vector<bool> phxfs_initialized(PHXFS_MAX_DEVICES, false);
 
@@ -251,14 +247,14 @@ static void phx_open_abort(phxfs_mmap_buffer_t *pb, int device_id) {
 }
 
 /* Open the char device. lock/drain_cv are process-lifetime (see ctor). */
-static int __phxfs_open(const char *dev_path, phxfs_mmap_buffer_t *mbuffer,
+static int __phxfs_open(phxfs_mmap_buffer_t *mbuffer,
                         int device_id, int phxfs_device_id) {
-    mbuffer->bdev_fd = open(dev_path, O_RDWR);
-
-    if (mbuffer->bdev_fd == -1) {
-        printf("failed to open file %s\n", dev_path);
+    int fd = open(phxfs_dev_path, O_RDWR | O_CLOEXEC);
+    if (fd == -1) {
+        fprintf(stderr, "failed to open %s: %s\n", phxfs_dev_path, std::strerror(errno));
         return -1;
     }
+    mbuffer->bdev_fd = fd;
     mbuffer->head = NULL;
     mbuffer->device_id = device_id;
     mbuffer->phxfs_device_id = phxfs_device_id;
@@ -304,10 +300,8 @@ int phxfs_open(int deviceID) {
         if (!force_host && devconn && devconn->find_device)
             phxfs_device_id = devconn->find_device(deviceID);
 
-        if (phxfs_device_id >= 0 &&
-            phxfs_device_id < (int)phxfs_dev_path.size()) {
-            ret = __phxfs_open(phxfs_dev_path[phxfs_device_id].c_str(), pb,
-                               deviceID, phxfs_device_id);
+        if (phxfs_device_id >= 0 && phxfs_device_id < PHXFS_MAX_DEVICES) {
+            ret = __phxfs_open(pb, deviceID, phxfs_device_id);
             if (ret == 0) {
                 pb->open_count = 1;
                 phxfs_initialized[deviceID] = true;

@@ -1,7 +1,7 @@
-// test_ioctl.cu — raw /dev/phxfs_devN mmap + PHXFS_IOCTL_MAP/UNMAP contract
+// test_ioctl.cu — raw /dev/phxfs_dev GPU encoding + mmap + MAP/UNMAP contract
 // tests. Talks to the kernel module directly (no libphoenix), so it covers
 // inputs libphoenix never produces: bad lengths, foreign/split/moved VMAs,
-// repeated MAP, wrong device fd, fork, process death, GPU memory freed while
+// repeated MAP, wrong GPU command, fork, process death, GPU memory freed while
 // mapped (vendor force-reclaim), and concurrent MAP vs munmap/cudaFree.
 //
 // Mode aware: reads /sys/class/phxfs-generic/phxfs_devN/map_mode.
@@ -36,7 +36,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "common.h"
+#include "../../libphoenix/include/common.h"
 
 #define KiB (1024ULL)
 #define MiB (1024ULL * 1024)
@@ -88,8 +88,8 @@ static int find_phx_dev(int cuda_dev) {
     return -1;
 }
 
-static int open_phx(int phx) {
-    return open(("/dev/phxfs_dev" + std::to_string(phx)).c_str(), O_RDWR);
+static int open_phx() {
+    return open("/dev/phxfs_dev", O_RDWR | O_CLOEXEC);
 }
 
 static int phx_ioctl(int fd, unsigned long cmd, const void *c, size_t clen,
@@ -103,11 +103,11 @@ static int phx_ioctl(int fd, unsigned long cmd, const void *c, size_t clen,
     int r = ioctl(fd, cmd, &p);
     return r < 0 ? -errno : r;
 }
-static int MAP(int fd, const void *c, size_t cl, const void *d, size_t dl) {
-    return phx_ioctl(fd, PHXFS_IOCTL_MAP, c, cl, d, dl);
+static int MAP(int fd, const void *c, size_t cl, const void *d, size_t dl, int gpu = g.phx) {
+    return phx_ioctl(fd, PHXFS_IOCTL_MAP_GPU(gpu), c, cl, d, dl);
 }
-static int UNMAP(int fd, const void *c, size_t cl, const void *d, size_t dl) {
-    return phx_ioctl(fd, PHXFS_IOCTL_UNMAP, c, cl, d, dl);
+static int UNMAP(int fd, const void *c, size_t cl, const void *d, size_t dl, int gpu = g.phx) {
+    return phx_ioctl(fd, PHXFS_IOCTL_UNMAP_GPU(gpu), c, cl, d, dl);
 }
 
 static char *vmap(int fd, size_t len) {
@@ -169,6 +169,30 @@ static bool verify(const char *c, size_t len, const DevBuf &b, const char *dptr)
 }
 
 // ---------------------------------------------------------------- contract
+
+static void t_encoding() {
+    printf("\n[encoding] command GPU/op bits / unbound zero-offset VMA\n");
+    unsigned long cmd = PHXFS_IOCTL_MAP_GPU(g.phx);
+    CHECK((_IOC_NR(cmd) >> PHXFS_IOCTL_GPU_SHIFT) == (unsigned)g.phx &&
+          (_IOC_NR(cmd) & 0xfU) == 1 && _IOC_TYPE(cmd) == PHXFS_IOCTL &&
+          _IOC_SIZE(cmd) == sizeof(phxfs_ioctl_map_t), "GPU/op encoding preserves ioctl fields");
+    int fd = open_phx();
+    CHECK(fd >= 0, "open unified node without SELECT");
+    if (fd < 0) return;
+    void *bad = mmap(NULL, L, PROT_READ | PROT_WRITE, MAP_SHARED, fd, getpagesize());
+    CHECK(bad == MAP_FAILED && errno == EINVAL, "nonzero mmap offset -> EINVAL");
+    if (bad != MAP_FAILED) munmap(bad, L);
+    int r = ioctl(fd, cmd ^ (1U << _IOC_TYPESHIFT), NULL);
+    CHECK(r < 0 && errno == ENOTTY, "malformed ioctl type -> ENOTTY");
+    r = ioctl(fd, cmd ^ (1U << _IOC_SIZESHIFT), NULL);
+    CHECK(r < 0 && errno == ENOTTY, "malformed ioctl size -> ENOTTY");
+    char *c = vmap(fd, L);
+    CHECK(c != NULL, "mmap reserves an address range without a GPU");
+    if (!c) { close(fd); return; }
+    CHECK(UNMAP(fd, c, L, NULL, 0) == 0, "UNMAP of an unbound VMA is a no-op");
+    munmap(c, L);
+    close(fd);
+}
 
 static void t_basic() {
     printf("\n[basic] MAP / data visible both ways / UNMAP idempotent\n");
@@ -302,26 +326,47 @@ static void t_foreign() {
 
     int other = -1, other_phx = -1;
     for (int i = 0; i < 64 && other < 0; i++) {
-        if (i == g.phx) continue;
-        other = open_phx(i);
+        if (i == g.phx || sysfs(i, "pci_bdf").empty()) continue;
+        other = open_phx();
         if (other >= 0) other_phx = i;
     }
     if (other >= 0) {
-        char *c = vmap(other, L);
-        rc = MAP(g.fd, c, L, d, L);
-        CHECK(rc == -EINVAL, "VMA of phxfs_dev%d via phxfs_dev%d's fd -> -EINVAL (rc=%d)",
-              other_phx, g.phx, rc);
-        munmap(c, L);
+        char *c = vmap(other, L), *dd = nullptr;
+        CHECK(c != nullptr, "reserve an unbound VMA through another fd");
+        if (c) {
+            CHECK(UNMAP(other, c, L, NULL, 0, other_phx) == 0, "UNMAP does not bind a GPU");
+            CHECK(MAP(other, c, L, NULL, L, other_phx) == -EINVAL,
+                  "basic argument rejection does not bind a GPU");
+            rc = MAP(g.fd, c, L, (void *)0x10000, L);
+            CHECK(rc < 0, "invalid GPU address fails without inserting pages (rc=%d)", rc);
+            CHECK(MAP(other, c, L, d, L, other_phx) == -EINVAL,
+                  "failed MAP keeps its original GPU binding");
+            rc = map_buffer(g.fd, c, L, b, &dd);
+            CHECK(rc == 0, "same-GPU retry after clean failure (rc=%d)", rc);
+            if (rc == 0) {
+                CHECK(UNMAP(other, c, L, dd, L, other_phx) == 0, "wrong-GPU UNMAP is a no-op");
+                CHECK(verify(c, L, b, dd), "mapping intact after wrong-GPU UNMAP");
+                UNMAP(g.fd, c, L, dd, L);
+                CHECK(MAP(g.fd, c, L, dd, L) == -EBUSY, "consumed VMA cannot be remapped");
+                CHECK(MAP(other, c, L, dd, L, other_phx) == -EINVAL,
+                      "UNMAP does not release the original GPU binding");
+            }
+            munmap(c, L);
+        }
         c = vmap(g.fd, L);
-        rc = MAP(other, c, L, d, L);
-        CHECK(rc == -EINVAL, "MAP through another device's fd -> -EINVAL (rc=%d)", rc);
-        munmap(c, L);
+        CHECK(c != nullptr, "reserve a separate unbound VMA");
+        if (c) {
+            rc = MAP(other, c, L, (void *)0x10000, L, other_phx);
+            CHECK(rc < 0, "first MAP attempt on GPU %d fails cleanly (rc=%d)", other_phx, rc);
+            CHECK(MAP(g.fd, c, L, d, L) == -EINVAL, "another GPU cannot rebind that VMA");
+            munmap(c, L);
+        }
         close(other);
     } else {
-        SKIP("only one phxfs device: cross-device fd case");
+        SKIP("only one phxfs GPU: cross-GPU binding cases");
     }
 
-    int fd2 = open_phx(g.phx);
+    int fd2 = open_phx();
     char *c = vmap(fd2, L), *dd = nullptr;
     rc = map_buffer(g.fd, c, L, b, &dd);
     CHECK(rc == 0, "VMA of a second fd on the same device is accepted (rc=%d)", rc);
@@ -391,9 +436,9 @@ static void t_bad_ioctl() {
     printf("\n[bad_ioctl] unknown command / bad argument pointer / UNMAP no-ops\n");
     int r = ioctl(g.fd, _IOW(PHXFS_IOCTL, 99, struct phxfs_ioctl_map_s), NULL);
     CHECK(r < 0 && errno == ENOTTY, "unknown ioctl -> ENOTTY (r=%d errno=%d)", r, errno);
-    r = ioctl(g.fd, PHXFS_IOCTL_MAP, (void *)8);
+    r = ioctl(g.fd, PHXFS_IOCTL_MAP_GPU(g.phx), (void *)8);
     CHECK(r < 0 && errno == EFAULT, "MAP with a bad arg pointer -> EFAULT (errno=%d)", errno);
-    r = ioctl(g.fd, PHXFS_IOCTL_UNMAP, (void *)8);
+    r = ioctl(g.fd, PHXFS_IOCTL_UNMAP_GPU(g.phx), (void *)8);
     CHECK(r < 0 && errno == EFAULT, "UNMAP with a bad arg pointer -> EFAULT (errno=%d)", errno);
     char *c = vmap(g.fd, L);
     CHECK(UNMAP(g.fd, c, L, (void *)0x1000000, L) == 0, "UNMAP of a never-mapped VMA -> 0");
@@ -414,7 +459,7 @@ static void t_lifetime() {
     CHECK(rc == 0, "MAP (rc=%d)", rc);
     CHECK(munmap(c, L) == 0, "munmap without UNMAP (VMA close tears it down)");
 
-    int fd2 = open_phx(g.phx);
+    int fd2 = open_phx();
     c = vmap(fd2, L);
     rc = map_buffer(fd2, c, L, b, &d);
     CHECK(rc == 0, "MAP via a second fd (rc=%d)", rc);
@@ -448,6 +493,50 @@ static void t_lifetime() {
     CHECK(rc == 0 && verify(c, L, b, d), "parent mapping intact after the child munmapped");
     UNMAP(g.fd, c, L, d, L);
     munmap(c, L);
+
+    int other_gpu = -1;
+    for (unsigned i = 0; i < PHXFS_IOCTL_GPU_LIMIT; ++i)
+        if ((int)i != g.phx && !sysfs(i, "pci_bdf").empty()) { other_gpu = i; break; }
+    if (other_gpu >= 0) {
+        c = vmap(g.fd, L);
+        int gate[2];
+        if (!c || pipe(gate) != 0) {
+            CHECK(false, "prepare fork-before-MAP case");
+            if (c) munmap(c, L);
+            b.release();
+            return;
+        }
+        fflush(stdout);
+        pid = fork();
+        if (pid == 0) {
+            close(gate[1]);
+            char ready = 0;
+            bool ok = read(gate[0], &ready, 1) == 1 &&
+                      MAP(g.fd, c, L, (void *)0x10000, L, other_gpu) == -EINVAL &&
+                      UNMAP(g.fd, c, L, NULL, 0, other_gpu) == 0;
+            close(gate[0]);
+            munmap(c, L);
+            _exit(ok ? 0 : 3);
+        }
+        close(gate[0]);
+        if (pid > 0) {
+            rc = map_buffer(g.fd, c, L, b, &d);
+            CHECK(rc == 0, "parent MAP after fork (rc=%d)", rc);
+            char ready = 1;
+            CHECK(write(gate[1], &ready, 1) == 1, "publish the parent's GPU binding");
+            close(gate[1]);
+            CHECK(waitpid(pid, &st, 0) == pid && WIFEXITED(st) && WEXITSTATUS(st) == 0,
+                  "child cannot rebind or unpin the parent's GPU after fork-before-MAP");
+            CHECK(rc != 0 || verify(c, L, b, d), "parent data intact after child teardown");
+            UNMAP(g.fd, c, L, d, L);
+        } else {
+            CHECK(false, "fork before MAP");
+            close(gate[1]);
+        }
+        munmap(c, L);
+    } else {
+        SKIP("only one phxfs GPU: fork-before-MAP cross-GPU binding");
+    }
     b.release();
 }
 
@@ -605,7 +694,7 @@ static int s_hold(int secs) {
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s <cuda_gpu> [all|contract|reclaim|race|<case>... | die | die_reset | hold <s>]\n"
-                        "cases: basic double_map small bounds foreign vma_changes bad_ioctl lifetime\n"
+                        "cases: encoding basic double_map small bounds foreign vma_changes bad_ioctl lifetime\n"
                         "       reclaim race_munmap race_parallel race_reclaim\n", argv[0]);
         return 2;
     }
@@ -616,11 +705,11 @@ int main(int argc, char **argv) {
     cudaFree(0);
     g.phx = find_phx_dev(g.cuda);
     if (g.phx < 0) { printf("FATAL: no phxfs device for CUDA %d (module loaded?)\n", g.cuda); return 2; }
-    g.fd = open_phx(g.phx);
-    if (g.fd < 0) { printf("FATAL: open /dev/phxfs_dev%d: %s\n", g.phx, strerror(errno)); return 2; }
+    g.fd = open_phx();
+    if (g.fd < 0) { printf("FATAL: open /dev/phxfs_dev: %s\n", strerror(errno)); return 2; }
     std::string mode = sysfs(g.phx, "map_mode"), page = sysfs(g.phx, "page_size");
     g.mode = mode.empty() ? -1 : atoi(mode.c_str());
-    printf("=== phxfs raw ioctl tests: CUDA %d -> /dev/phxfs_dev%d, map_mode=%s, page_size=%s ===\n",
+    printf("=== phxfs raw ioctl tests: CUDA %d -> /dev/phxfs_dev GPU index %d, map_mode=%s, page_size=%s ===\n",
            g.cuda, g.phx, g.mode == MODE_FULL ? "FULL" : g.mode == MODE_STAGING ? "STAGING" : mode.c_str(),
            page.c_str());
     if (g.mode != MODE_FULL && g.mode != MODE_STAGING) { printf("FATAL: unknown map_mode\n"); return 2; }
@@ -633,7 +722,7 @@ int main(int argc, char **argv) {
     if (args[0] == "hold") return s_hold(args.size() > 1 ? atoi(args[1].c_str()) : 10);
 
     const std::vector<std::pair<std::string, std::function<void()>>> cases = {
-        {"basic", t_basic}, {"double_map", t_double_map}, {"small", t_small},
+        {"encoding", t_encoding}, {"basic", t_basic}, {"double_map", t_double_map}, {"small", t_small},
         {"bounds", t_bounds}, {"foreign", t_foreign}, {"vma_changes", t_vma_changes},
         {"bad_ioctl", t_bad_ioctl}, {"lifetime", t_lifetime},
         {"reclaim", t_reclaim},

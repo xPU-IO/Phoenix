@@ -38,7 +38,7 @@ elseif (PHXFS_VENDOR STREQUAL "METAX")
 endif ()
 target_compile_definitions (test_batch PRIVATE TEST_FILE="${TEST_FILE}")
 
-# --- test_ioctl: raw /dev/phxfs_devN mmap + MAP/UNMAP ioctl contract ---
+# --- test_ioctl: raw /dev/phxfs_dev GPU encoding + mmap + MAP/UNMAP contract ---
 # Talks to the kernel module directly; only needs libphoenix's common.h.
 add_executable (test_ioctl test_ioctl${TEST_GPU_SUFFIX})
 target_include_directories (test_ioctl PRIVATE "${phoenix_include}")

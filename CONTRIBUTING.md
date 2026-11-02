@@ -37,6 +37,7 @@ Phoenix is pre-1.0: **there is no stable ABI yet.** Exported symbols, struct lay
 ```shell
 # Default: NVIDIA GPU (no extra flags needed)
 mkdir -p build && cd build && cmake ../ && make -j
+make modules
 
 # For other vendors (not yet implemented, interface ready):
 # cmake -DPHXFS_VENDOR=AMD ../
@@ -55,8 +56,9 @@ This produces:
 nvidia-smi
 sudo make insmod
 
-# Verify: 8 GPU devices should appear
-ls /dev/phxfs_dev*
+# Verify: one character node, plus one metadata directory per GPU
+ls /dev/phxfs_dev
+ls /sys/class/phxfs-generic/
 # Check dmesg for BAR remap messages
 dmesg | tail -20
 ```

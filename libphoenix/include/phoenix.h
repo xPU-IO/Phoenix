@@ -262,30 +262,6 @@ int phxfs_write_stream(int fd, void *buf, size_t *nbytes,
                        off_t *buf_offset, off_t *f_offset,
                        ssize_t *bytes_done, void *stream);
 
-/* Optional process-local debug counters for stream I/O.  Counters are
- * monotonic until reset and are safe to read while transfers are active. */
-typedef struct phxfs_io_stats {
-    uint64_t read_submit_count;
-    uint64_t write_submit_count;
-    uint64_t read_submit_bytes;
-    uint64_t write_submit_bytes;
-    uint64_t read_completed_bytes;
-    uint64_t write_completed_bytes;
-    uint64_t read_error_count;
-    uint64_t write_error_count;
-    uint64_t read_callback_wait_ns;
-    uint64_t write_callback_wait_ns;
-    uint64_t read_xfer_ns;
-    uint64_t write_xfer_ns;
-    uint64_t read_callback_ns;
-    uint64_t write_callback_ns;
-    uint64_t inflight_count;
-    uint64_t max_inflight;
-} phxfs_io_stats_t;
-
-int phxfs_get_io_stats(phxfs_io_stats_t *out);
-int phxfs_reset_io_stats(void);
-
 #ifdef __cplusplus
 }
 #endif

@@ -25,7 +25,7 @@ struct phxfs_mmap_buffer {
     struct page **ppages; // host page which are mapped to dev page
     unsigned long host_page_num; // the corresponding host page num to dev page num, equal to dev_page_num
     struct vm_area_struct *vma;
-    struct phxfs_dev *dev;
+    struct phxfs_dev *dev; /* NULL before MAP; first MAP fixes it until teardown */
     bool remap; // if vma remap_pfn_range set true, otherwise false
     struct p2p_vmap* map;
     u64 staging_span;/* start of the staging BAR span this buffer holds a
@@ -34,7 +34,7 @@ struct phxfs_mmap_buffer {
 typedef struct phxfs_mmap_buffer* phxfs_mmap_buffer_t;
 
 int phxfs_map_dev_addr_inner(phxfs_mmap_buffer_t pbuffer, u64 devaddr, u64 dev_len);
-int phxfs_map_dev_addr(struct file *filp, phxfs_ioctl_map_t *map_param, u64 devaddr, u64 dev_len, u64 cpuvaddr, u64 length);
+int phxfs_map_dev_addr(struct phxfs_dev *dev, phxfs_ioctl_map_t *map_param, u64 devaddr, u64 dev_len, u64 cpuvaddr, u64 length);
 int phxfs_mmap(struct file *filp, struct vm_area_struct *vma);
 void phxfs_mbuffer_put(phxfs_mmap_buffer_t pbuffer);
 

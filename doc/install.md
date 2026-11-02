@@ -92,7 +92,8 @@ mkdir -p build && cd build
 cmake -DPHXFS_VENDOR=<vendor> ../      # see the options below; default is NVIDIA
 make -j
 ```
-This compiles the user library, the `phxfs` kernel module, and the tests.
+This compiles the user library and tests. The kernel module is built only when
+explicitly requested with `make modules` or `make install with_module`.
 
 Vendor selection (`-DPHXFS_VENDOR=<value>`):
 
@@ -106,28 +107,38 @@ cmake -DPHXFS_VENDOR=HUAWEI ../        # requires module/huawei-backend.c + libp
 
 Other build options:
 
-- Skip the kernel module: `cmake -Dno_module=true ../`
 - Switch the default BAR mapping mode: `cmake -DPHXFS_MAP_MODE=full ../` (default `staging`; see [below](#bar-mapping-mode-staging-default-vs-full)).
 
 ## 3. Install
 
-### Install to system paths (`make install`)
-
-Installs `libphoenix.so` → `<prefix>/lib`, the headers → `<prefix>/include` (default prefix
-`/usr/local`), and the kernel module → `/lib/modules/$(uname -r)/extra` + `depmod`:
+### Library installation (`make install`)
 
 ```shell
 cd build
 sudo make install
 ```
 
-This installs (copies) the kernel module; it does **not** load it. If the module install fails
-(e.g. the running kernel has no writable module tree), `make install` prints the reason and
-still installs the library. Although `make install` re-invokes the build, the module build is
-incremental — unchanged sources (and an unchanged kernel configuration probe) are not
-recompiled.
+This builds user space and installs only `libphoenix` into `<prefix>/lib` and
+headers into `<prefix>/include` (default prefix `/usr/local`). It never builds,
+installs, or loads the kernel module, runs `depmod`, or refreshes the PAT snapshot.
+No module-related configuration option is needed, including inside containers.
 
-It also refreshes the root-only PAT memtype snapshot at `/run/phxfs/pat_memtype_list` when debugfs is available.
+### Including the kernel module (`make install with_module`)
+
+```shell
+cd build
+sudo make install with_module
+```
+
+The additional `with_module` target builds and installs the kernel module into
+`/lib/modules/$(uname -r)/extra`, refreshes `/run/phxfs/pat_memtype_list` when
+available, and runs `depmod`. It does **not** load the module. A requested
+module build/install failure makes the command fail; the library installation
+is not rolled back.
+
+The existing module targets remain available: `make modules` builds only the
+module; `make clean_modules` cleans it; `make insmod`, `make insmod-full`,
+`make insmod-staging`, and `make rmmod` control loading and unloading.
 
 ### Load the kernel module
 
@@ -136,6 +147,7 @@ command from your vendor's runtime), then:
 
 ```shell
 cd build
+make modules             # explicit build; unnecessary if with_module already built it
 sudo make insmod          # loads phoenixfs.ko with the build's default mode (STAGING)
 ```
 
@@ -180,6 +192,37 @@ cat /sys/module/phoenixfs/parameters/phxfs_map_mode
 
 The user library reads the mode from the kernel at `phxfs_open()` and adapts automatically —
 the same `libphoenix.so` and the same application code work with either mode.
+
+### Containers (Docker)
+
+Load `phoenixfs` on the **host**; install only `libphoenix` and the application's
+adapter inside the image. NVIDIA containers also need NVIDIA Container Toolkit.
+All GPUs use the single `/dev/phxfs_dev` node (add storage mounts as needed):
+
+```shell
+docker run --rm -it --gpus all \
+  --device /dev/phxfs_dev:/dev/phxfs_dev:rw --ulimit memlock=-1 \
+  --mount type=bind,src=/sys/class/phxfs-generic,dst=/sys/class/phxfs-generic,readonly \
+  --mount type=bind,src=/sys/devices/virtual/phxfs-generic,dst=/sys/devices/virtual/phxfs-generic,readonly \
+  IMAGE COMMAND
+```
+
+`/sys/class/phxfs-generic` exposes GPU metadata links; the read-only
+`/sys/devices/virtual/phxfs-generic` mount makes their targets accessible. These
+are current metadata paths, not additional character devices. Verify `pci_bdf`,
+`map_mode`, and `page_size` are readable inside the container.
+The library encodes GPU indices internally; vLLM/LMCache APIs and configuration
+do not change. Deploy the updated module, library and LMCache shim together.
+Granting the shared node permits GPU selection across the module's device table;
+`--gpus`/`CUDA_VISIBLE_DEVICES` are not a per-GPU Phoenix authorization boundary.
+
+Keep default capabilities, seccomp, and SELinux policies; do not add broad
+capabilities or disable isolation unless the vendor/application/host policy
+requires it. If seccomp denies `io_uring`, Phoenix falls back to sync (or set
+`-e PHXFS_IO_ENGINE=sync`). `--ipc=host` is application-specific; use
+`--shm-size` if private shared memory suffices. `/sys/module/phoenixfs` is only
+needed for diagnostics. Rootless/user-namespace setups need host-specific device
+permissions.
 
 ## 4. Run tests
 

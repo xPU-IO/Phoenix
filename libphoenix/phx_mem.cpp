@@ -11,7 +11,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "phoenix.h"
+#include "include/phoenix.h"
 #include "phx_internal.h"
 
 /* Vendor connector hook: allocate/free a small device probe buffer without
@@ -129,10 +129,11 @@ static int insert_phxfs_mmap_node(phxfs_mmap_buffer_t *mbuffer, phxfs_p2p_map_t 
 /* ------------------------------------------------------------------ */
 
 static int __phxfs_regmem(phxfs_mmap_buffer_t *mbuffer, u64 dev_addr, u64 c_addr, size_t len) {
-    phxfs_ioctl_para_t para;
+    phxfs_ioctl_para_t para = {};
     int ret;
 
-    if (!mbuffer->init_stat)
+    if (!mbuffer->init_stat || mbuffer->phxfs_device_id < 0 ||
+        (unsigned)mbuffer->phxfs_device_id >= PHXFS_IOCTL_GPU_LIMIT)
         return -ENODEV;
 
     para.map_param.n_vaddr = (u64)dev_addr;
@@ -140,17 +141,18 @@ static int __phxfs_regmem(phxfs_mmap_buffer_t *mbuffer, u64 dev_addr, u64 c_addr
     para.map_param.c_size = len;
     para.map_param.n_size = len;
     para.map_param.dev.dev_id = mbuffer->phxfs_device_id;
-    ret = ioctl(mbuffer->bdev_fd, PHXFS_IOCTL_MAP, &para);
+    ret = ioctl(mbuffer->bdev_fd, PHXFS_IOCTL_MAP_GPU(mbuffer->phxfs_device_id), &para);
     return ret < 0 ? -errno : ret;
 }
 
 static int __phxfs_deregmem(phxfs_mmap_buffer_t *pb, u64 dev_addr, u64 c_addr, size_t len) {
-    phxfs_ioctl_para_t para;
+    phxfs_ioctl_para_t para = {};
     int ret;
 
     /* close() marks init_stat=false before draining, but keeps the character
      * device fd open until all registrations have been explicitly unmapped. */
-    if (pb->bdev_fd < 0)
+    if (pb->bdev_fd < 0 || pb->phxfs_device_id < 0 ||
+        (unsigned)pb->phxfs_device_id >= PHXFS_IOCTL_GPU_LIMIT)
         return -ENODEV;
 
     para.map_param.n_vaddr = (u64)dev_addr;
@@ -159,7 +161,7 @@ static int __phxfs_deregmem(phxfs_mmap_buffer_t *pb, u64 dev_addr, u64 c_addr, s
     para.map_param.n_size = len;
     para.map_param.dev.dev_id = pb->phxfs_device_id;
 
-    ret = ioctl(pb->bdev_fd, PHXFS_IOCTL_UNMAP, &para);
+    ret = ioctl(pb->bdev_fd, PHXFS_IOCTL_UNMAP_GPU(pb->phxfs_device_id), &para);
     return ret < 0 ? -errno : ret;
 }
 
@@ -259,6 +261,8 @@ void free_phxfs_p2p_map(phxfs_mmap_buffer_t *buffer) {
 int phx_regmem_internal(phxfs_mmap_buffer_t *pb, const void *addr, size_t len,
                         void **target_addr) {
     PHX_RANGE("phx.regmem");   /* mmap + ioctl MAP (kernel pin + BAR remap) */
+    if (pb->phxfs_device_id < 0 || (unsigned)pb->phxfs_device_id >= PHXFS_IOCTL_GPU_LIMIT)
+        return -ENODEV;
     /* Reuse an identical registration; reject a conflicting overlap. */
     bool overlap = false;
     pthread_mutex_lock(&pb->lock);
@@ -291,7 +295,8 @@ int phx_regmem_internal(phxfs_mmap_buffer_t *pb, const void *addr, size_t len,
 
     /* Single contiguous mmap of the whole region (kvmalloc backend: no 2GiB
      * per-mmap limit). */
-    p2p_map->vaddr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, pb->bdev_fd, 0);
+    p2p_map->vaddr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED,
+                        pb->bdev_fd, 0);
     if (p2p_map->vaddr == MAP_FAILED) {
         fprintf(stderr, "%s: mmap fail (%s)\n", __func__, strerror(errno));
         free(p2p_map);

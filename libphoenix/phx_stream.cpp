@@ -29,8 +29,6 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
-#include <ctime>
-#include <atomic>
 
 #include "phoenix.h"
 #include "phx_internal.h"
@@ -51,72 +49,16 @@ struct phx_stream_job {
     size_t       nbytes;
     off_t        f_offset;
     ssize_t     *bytes_done;     /* caller storage, written on completion */
-    uint64_t     submit_ns;
 };
-
-struct phx_io_counters {
-    std::atomic<uint64_t> read_submit_count{0};
-    std::atomic<uint64_t> write_submit_count{0};
-    std::atomic<uint64_t> read_submit_bytes{0};
-    std::atomic<uint64_t> write_submit_bytes{0};
-    std::atomic<uint64_t> read_completed_bytes{0};
-    std::atomic<uint64_t> write_completed_bytes{0};
-    std::atomic<uint64_t> read_error_count{0};
-    std::atomic<uint64_t> write_error_count{0};
-    std::atomic<uint64_t> read_callback_wait_ns{0};
-    std::atomic<uint64_t> write_callback_wait_ns{0};
-    std::atomic<uint64_t> read_xfer_ns{0};
-    std::atomic<uint64_t> write_xfer_ns{0};
-    std::atomic<uint64_t> read_callback_ns{0};
-    std::atomic<uint64_t> write_callback_ns{0};
-    std::atomic<uint64_t> inflight_count{0};
-    std::atomic<uint64_t> max_inflight{0};
-};
-
-static phx_io_counters g_io_counters;
-
-static uint64_t phx_clock_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
-
-static void phx_update_max(std::atomic<uint64_t> &target, uint64_t value) {
-    uint64_t old = target.load(std::memory_order_relaxed);
-    while (old < value && !target.compare_exchange_weak(
-        old, value, std::memory_order_relaxed, std::memory_order_relaxed)) {}
-}
 
 /* Runs when every op previously enqueued on the stream completed, and
  * blocks everything enqueued after it until it returns. See the HARD
  * RULE above: xfer() and free() only. */
 static void phx_stream_callback(void *arg) {
     struct phx_stream_job *j = (struct phx_stream_job *)arg;
-    uint64_t callback_start = phx_clock_ns();
-    uint64_t wait_ns = callback_start - j->submit_ns;
-    uint64_t xfer_start = phx_clock_ns();
+
     *j->bytes_done = xfer(j->fd, j->host, (ssize_t)j->nbytes, j->f_offset,
                           j->op == PHXFS_OP_WRITE);
-    uint64_t callback_end = phx_clock_ns();
-    bool write = j->op == PHXFS_OP_WRITE;
-    if (write) {
-        g_io_counters.write_callback_wait_ns.fetch_add(wait_ns);
-        g_io_counters.write_xfer_ns.fetch_add(callback_end - xfer_start);
-        g_io_counters.write_callback_ns.fetch_add(callback_end - callback_start);
-        if (*j->bytes_done < 0)
-            g_io_counters.write_error_count.fetch_add(1);
-        else
-            g_io_counters.write_completed_bytes.fetch_add((uint64_t)*j->bytes_done);
-    } else {
-        g_io_counters.read_callback_wait_ns.fetch_add(wait_ns);
-        g_io_counters.read_xfer_ns.fetch_add(callback_end - xfer_start);
-        g_io_counters.read_callback_ns.fetch_add(callback_end - callback_start);
-        if (*j->bytes_done < 0)
-            g_io_counters.read_error_count.fetch_add(1);
-        else
-            g_io_counters.read_completed_bytes.fetch_add((uint64_t)*j->bytes_done);
-    }
-    g_io_counters.inflight_count.fetch_sub(1, std::memory_order_relaxed);
     free(j);
 }
 
@@ -150,7 +92,6 @@ static int phxfs_stream_io(int fd, void *buf, size_t *nbytes,
     j->nbytes = nb;
     j->f_offset = fo;
     j->bytes_done = bytes_done;
-    j->submit_ns = phx_clock_ns();
 
     /* Resolve the buffer across every opened device (the caller does not
      * name one): a registration hit yields the P2P host address and its
@@ -223,18 +164,6 @@ static int phxfs_stream_io(int fd, void *buf, size_t *nbytes,
         return rc;
     }
 
-    bool write = op == PHXFS_OP_WRITE;
-    if (write) {
-        g_io_counters.write_submit_count.fetch_add(1);
-        g_io_counters.write_submit_bytes.fetch_add(nb);
-    } else {
-        g_io_counters.read_submit_count.fetch_add(1);
-        g_io_counters.read_submit_bytes.fetch_add(nb);
-    }
-    uint64_t inflight = g_io_counters.inflight_count.fetch_add(
-        1, std::memory_order_relaxed) + 1;
-    phx_update_max(g_io_counters.max_inflight, inflight);
-
     return 0;   /* accepted; outcome in *bytes_done after stream sync */
 }
 
@@ -250,34 +179,4 @@ int phxfs_write_stream(int fd, void *buf, size_t *nbytes,
                        ssize_t *bytes_done, void *stream) {
     return phxfs_stream_io(fd, buf, nbytes, buf_offset, f_offset,
                            bytes_done, stream, PHXFS_OP_WRITE);
-}
-
-int phxfs_get_io_stats(phxfs_io_stats_t *out) {
-    if (!out) return -EINVAL;
-#define PHX_STAT(name) out->name = g_io_counters.name.load(std::memory_order_relaxed)
-    PHX_STAT(read_submit_count); PHX_STAT(write_submit_count);
-    PHX_STAT(read_submit_bytes); PHX_STAT(write_submit_bytes);
-    PHX_STAT(read_completed_bytes); PHX_STAT(write_completed_bytes);
-    PHX_STAT(read_error_count); PHX_STAT(write_error_count);
-    PHX_STAT(read_callback_wait_ns); PHX_STAT(write_callback_wait_ns);
-    PHX_STAT(read_xfer_ns); PHX_STAT(write_xfer_ns);
-    PHX_STAT(read_callback_ns); PHX_STAT(write_callback_ns);
-    PHX_STAT(inflight_count); PHX_STAT(max_inflight);
-#undef PHX_STAT
-    return 0;
-}
-
-int phxfs_reset_io_stats(void) {
-    phxfs_io_stats_t zero = {};
-#define PHX_RESET(name) g_io_counters.name.store(zero.name, std::memory_order_relaxed)
-    PHX_RESET(read_submit_count); PHX_RESET(write_submit_count);
-    PHX_RESET(read_submit_bytes); PHX_RESET(write_submit_bytes);
-    PHX_RESET(read_completed_bytes); PHX_RESET(write_completed_bytes);
-    PHX_RESET(read_error_count); PHX_RESET(write_error_count);
-    PHX_RESET(read_callback_wait_ns); PHX_RESET(write_callback_wait_ns);
-    PHX_RESET(read_xfer_ns); PHX_RESET(write_xfer_ns);
-    PHX_RESET(read_callback_ns); PHX_RESET(write_callback_ns);
-    PHX_RESET(inflight_count); PHX_RESET(max_inflight);
-#undef PHX_RESET
-    return 0;
 }

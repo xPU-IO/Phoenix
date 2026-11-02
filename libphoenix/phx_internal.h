@@ -69,7 +69,7 @@ typedef struct phxfs_mmap_node_s {
 /* ---- Per-device state ---- */
 typedef struct phxfs_mmap_buffer_s {
     int device_id;         /* public accelerator id (CUDA/HIP/NPU ordinal) */
-    int phxfs_device_id;   /* internal /dev/phxfs_devN index, or -1 in host mode */
+    int phxfs_device_id;   /* internal sysfs GPU index, or -1 in host mode */
     int bdev_fd;
     bool init_stat;     /* device is OPEN (fd valid, usable) */
     bool closing;       /* close in progress: reject new dev_get() */

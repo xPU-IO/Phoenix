@@ -10,7 +10,7 @@ Phoenix is middleware for **direct I/O from storage to xPU (GPU/NPU)** via DMA, 
 
 | Path | Role |
 | --- | --- |
-| `module/` | `phxfs` kernel module — GPU BAR remap, per-GPU char device, `mmap`/`ioctl` P2P mapping; `phxfs-backend.*` + `nvidia-backend.c` select the P2P backend |
+| `module/` | `phxfs` kernel module — GPU BAR remap, single `/dev/phxfs_dev` node with GPU-coded ioctl numbers and GPU-neutral mmap reservations and per-GPU sysfs metadata, `mmap`/`ioctl` P2P mapping; `phxfs-backend.*` + `nvidia-backend.c` select the P2P backend |
 | `libphoenix/` | User C/C++ lib — `phxfs_open/close`, `regmem/deregmem`, `read/write`, batch + async batch (`phx_device.cpp` / `phx_mem.cpp` / `phx_io.cpp`), pluggable I/O engines under `io_engine/` (`io_engine_*.cpp`, `io_pool.cpp`); `connectors/` holds the vendor `DevConnector` (`nvidia_connector.cpp`) |
 | `adapters/vLLM/phxloader/` | vLLM weight loader (safetensors → GPU DMA) via pybind11, published `phxloader` pkg |
 | `adapters/lmcache/phxfile/` | C shim for the official LMCache GDS `phx` backend; stream-ordered I/O |
@@ -21,18 +21,19 @@ Phoenix is middleware for **direct I/O from storage to xPU (GPU/NPU)** via DMA, 
 
 ```shell
 # prerequisites: NVIDIA GDS + MLNX_OFED, kernel source for running kernel, CUDA 12.4, liburing
-mkdir -p build && cd build && cmake ../ && make -j    # default vendor: NVIDIA
+mkdir -p build && cd build && cmake ../ && make -j    # user library + tests; default vendor: NVIDIA
+make modules              # explicitly build kernel module
 sudo make insmod          # insert kernel module (run `nvidia-smi` first)
 sudo make rmmod           # remove
 ./bin/test_regmem 0       # memory registration lifecycle tests
 ./bin/test_io 0           # I/O correctness + performance tests
 ```
-Skip the module: `cmake -Dno_module=true ../`.
+Default `make` builds user space; `make install` installs only the library and headers. Use `make install with_module` to also build and install the kernel module.
 Target a different vendor: `cmake -DPHXFS_VENDOR=AMD ../` (requires implementing `module/amd-backend.c` + `libphoenix/connectors/amd_connector.cpp` first).
 
 ## Common tasks
 
-**Kernel module work** — edit under `module/`; rebuild with `make` in `build/`; `sudo make insmod`. Watch `dmesg` for `phxfs*` messages. If `insmod` fails with "Operation not permitted", the GPU BAR is held by another process/driver (see `doc/troubleshooting.md`). Vendor-specific P2P calls live only in `<vendor>-backend.c`; core files (`phxfs.c`, `phxfs-mem.c`, `phxfs-p2p-service.c`) call through the `phxfs_p2p` function-pointer table and must stay vendor-agnostic.
+**Kernel module work** — edit under `module/`; rebuild with `make modules` in `build/`; `sudo make insmod`. Watch `dmesg` for `phxfs*` messages. If `insmod` fails with "Operation not permitted", the GPU BAR is held by another process/driver (see `doc/troubleshooting.md`). Vendor-specific P2P calls live only in `<vendor>-backend.c`; core files (`phxfs.c`, `phxfs-mem.c`, `phxfs-p2p-service.c`) call through the `phxfs_p2p` function-pointer table and must stay vendor-agnostic.
 
 **Library / API work** — edit `libphoenix/`; adapters consume `libphoenix.so` via pybind11 or the `phxfile` C shim. Vendor-specific calls (CUDA, HIP, ...) live only in `libphoenix/connectors/<vendor>_connector.cpp`; core files (`phx_device.cpp`, `phx_mem.cpp`, `phx_io.cpp`) call through the `devconn` function-pointer table and must stay vendor-agnostic.
 

@@ -7,7 +7,7 @@
 #include <linux/nvme.h>
 #include <linux/memremap.h>
 #include <linux/genalloc.h>
-#include <linux/cdev.h>
+#include <linux/device.h>
 #include <linux/completion.h>
 #include <linux/mmzone.h>
 #include <linux/mutex.h>
@@ -180,8 +180,7 @@ struct phxfs_dev {
     u64 p2p_slice_start; /* p2pdma bootstrap slice, 0 if none */
     u64 p2p_slice_size;
     struct resource pgmap_res;
-    struct device device; /* char device. */
-    struct cdev cdev;
+    struct device *metadata; /* sysfs-only device; no per-GPU character node */
     int idx;
     struct phxfs_pgmap *p2p_pgmap; /* legacy single-segment pgmap (kept for compat) */
     void __iomem *pci_mem_va; /* legacy single-segment VA (kept for compat) */
@@ -301,10 +300,14 @@ typedef struct phxfs_ioctl_map_s phxfs_ioctl_map_t;
 
 
 #define PHXFS_IOCTL 0x88 /* 0x4c */
-#define PHXFS_IOCTL_MAP _IOW(PHXFS_IOCTL, 1, struct phxfs_ioctl_map_s)
-#define PHXFS_IOCTL_UNMAP _IOW(PHXFS_IOCTL, 2, struct phxfs_ioctl_map_s)
+#define PHXFS_IOCTL_GPU_SHIFT 4
+#define PHXFS_IOCTL_GPU_LIMIT (1U << (_IOC_NRBITS - PHXFS_IOCTL_GPU_SHIFT))
+#define PHXFS_IOCTL_MAP_GPU(gpu) _IOW(PHXFS_IOCTL, ((gpu) << PHXFS_IOCTL_GPU_SHIFT) | 1U, struct phxfs_ioctl_map_s)
+#define PHXFS_IOCTL_UNMAP_GPU(gpu) _IOW(PHXFS_IOCTL, ((gpu) << PHXFS_IOCTL_GPU_SHIFT) | 2U, struct phxfs_ioctl_map_s)
+#define PHXFS_IOCTL_MAP PHXFS_IOCTL_MAP_GPU(0)
+#define PHXFS_IOCTL_UNMAP PHXFS_IOCTL_UNMAP_GPU(0)
 
-void phxfs_map_dev_release(struct file *filp, phxfs_ioctl_map_t *map_param, u64 devaddr, u64 dev_len, u64 cpuvaddr, u64 length);
+void phxfs_map_dev_release(struct phxfs_dev *dev, phxfs_ioctl_map_t *map_param, u64 devaddr, u64 dev_len, u64 cpuvaddr, u64 length);
 
 /*
  * Staging mode: give the registered buffer's BAR pages a ZONE_DEVICE mapping.

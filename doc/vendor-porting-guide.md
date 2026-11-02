@@ -8,9 +8,9 @@ This guide explains how to bring a new GPU/NPU into Phoenix's storage-to-acceler
 
 ## 1. 总览 | Overview
 
-Phoenix 分三层：`phxfs` 内核模块（GPU BAR remap + 每卡一个字符设备 + mmap/ioctl P2P 映射）、`libphoenix` 用户库（regmem / read / write / batch）、应用适配器（vLLM 等）。多厂商支持在**编译期**由 `PHXFS_VENDOR`（NVIDIA / METAX / AMD / HUAWEI）选定，一次构建只编入一个厂商后端，不支持混插。
+Phoenix 分三层：`phxfs` 内核模块（GPU BAR remap + 单字符节点及 GPU/操作编码 + mmap/ioctl P2P 映射）、`libphoenix` 用户库（regmem / read / write / batch）、应用适配器（vLLM 等）。多厂商支持在**编译期**由 `PHXFS_VENDOR`（NVIDIA / METAX / AMD / HUAWEI）选定，一次构建只编入一个厂商后端，不支持混插。
 
-Phoenix has three layers: the `phxfs` kernel module (GPU BAR remap + one char device per GPU + mmap/ioctl P2P mapping), the `libphoenix` user library (regmem / read / write / batch), and application adapters (vLLM etc.). Multi-vendor support is selected at **compile time** via `PHXFS_VENDOR` (NVIDIA / METAX / AMD / HUAWEI); only one vendor backend is compiled in per build — mixed-vendor machines are not supported.
+Phoenix has three layers: the `phxfs` kernel module (GPU BAR remap + a single char device with GPU/operation encoding + mmap/ioctl P2P mapping), the `libphoenix` user library (regmem / read / write / batch), and application adapters (vLLM etc.). Multi-vendor support is selected at **compile time** via `PHXFS_VENDOR` (NVIDIA / METAX / AMD / HUAWEI); only one vendor backend is compiled in per build — mixed-vendor machines are not supported.
 
 厂商相关的代码被刻意隔离在两个文件里，核心代码只通过两张函数指针表调用厂商能力：
 
@@ -259,6 +259,7 @@ Two modes selected by the module parameter `phxfs_map_mode`: `0` = FULL — the 
 ```shell
 # 1. 构建（换厂商名）
 mkdir -p build && cd build && cmake ../ -DPHXFS_VENDOR=<NAME> && make -j8
+make modules
 
 # 2. 加载顺序：先厂商驱动，后 phxfs
 nvidia-smi          # 厂商侧确认驱动在位

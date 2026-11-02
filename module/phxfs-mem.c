@@ -266,12 +266,11 @@ static struct vm_area_struct *phxfs_find_phony_vma(struct mm_struct *mm,
 }
 
 /*
- * Look up the phony buffer behind the caller's mapping [cpuvaddr, +length)
- * on device `dev` and take a reference on it, so it survives a concurrent
- * munmap() once mmap_lock is dropped. Release with phxfs_mbuffer_put().
+ * Look up the caller's phony mapping [cpuvaddr, +length) and take a reference
+ * before dropping mmap_lock. GPU binding is checked under mbuffer->lock.
+ * Release with phxfs_mbuffer_put().
  */
-static phxfs_mmap_buffer_t phxfs_get_phony_buffer(struct phxfs_dev *dev,
-                                                  u64 cpuvaddr, u64 length)
+static phxfs_mmap_buffer_t phxfs_get_phony_buffer(u64 cpuvaddr, u64 length)
 {
     phxfs_mmap_buffer_t mbuffer = NULL;
     struct mm_struct *mm = current->mm;
@@ -290,8 +289,7 @@ static phxfs_mmap_buffer_t phxfs_get_phony_buffer(struct phxfs_dev *dev,
     vma = phxfs_find_phony_vma(mm, cpuvaddr, length);
     if (vma) {
         mbuffer = (phxfs_mmap_buffer_t)vma->vm_private_data;
-        if (mbuffer && mbuffer->dev == dev && mbuffer->c_vaddr == cpuvaddr &&
-            mbuffer->map_len == length)
+        if (mbuffer && mbuffer->c_vaddr == cpuvaddr && mbuffer->map_len == length)
             phxfs_mbuffer_get_ref(mbuffer);
         else
             mbuffer = NULL;
@@ -577,12 +575,11 @@ out:
     return ret;
 }
 
-int phxfs_map_dev_addr(struct file *filp, phxfs_ioctl_map_t *map_param, u64 devaddr, u64 dev_len, u64 cpuvaddr, u64 length) {
+int phxfs_map_dev_addr(struct phxfs_dev *dev, phxfs_ioctl_map_t *map_param, u64 devaddr, u64 dev_len, u64 cpuvaddr, u64 length) {
     int ret;
     phxfs_mmap_buffer_t mbuffer;
 
-    mbuffer = phxfs_get_phony_buffer((struct phxfs_dev *)filp->private_data,
-                                     cpuvaddr, length);
+    mbuffer = phxfs_get_phony_buffer(cpuvaddr, length);
     if (mbuffer == NULL)
         return -EINVAL;
 
@@ -594,7 +591,9 @@ int phxfs_map_dev_addr(struct file *filp, phxfs_ioctl_map_t *map_param, u64 deva
     }
 
     mutex_lock(&mbuffer->lock);
-    if (mbuffer->remap || mbuffer->consumed) {
+    if (mbuffer->dev && mbuffer->dev != dev) {
+        ret = -EINVAL;
+    } else if (mbuffer->remap || mbuffer->consumed) {
         /* The BAR PTEs of the earlier MAP stay in the VMA until it is
          * unmapped, so it cannot be mapped again (and silently re-mapping
          * would leak the earlier pin, arrays and span reference). */
@@ -602,6 +601,9 @@ int phxfs_map_dev_addr(struct file *filp, phxfs_ioctl_map_t *map_param, u64 deva
                   cpuvaddr);
         ret = -EBUSY;
     } else {
+        /* Keep the first MAP attempt's GPU until the VMA is destroyed. */
+        mbuffer->dev = dev;
+        mbuffer->dev_id = dev->idx;
         mbuffer->n_vaddr = devaddr;
         mbuffer->dev_len = dev_len;
         ret = phxfs_map_dev_addr_inner(mbuffer, devaddr, dev_len);
@@ -631,15 +633,15 @@ static void phxfs_mbuffer_unpin(phxfs_mmap_buffer_t mbuffer) {
  * still inserted in that VMA, and unmapping a BAR unit while a page table
  * still references its pages would block forever in memunmap_pages().
  */
-void phxfs_map_dev_release(struct file *filp, phxfs_ioctl_map_t *map_param, u64 devaddr, u64 dev_len, u64 cpuvaddr, u64 length) {
+void phxfs_map_dev_release(struct phxfs_dev *dev, phxfs_ioctl_map_t *map_param, u64 devaddr, u64 dev_len, u64 cpuvaddr, u64 length) {
     phxfs_mmap_buffer_t mbuffer;
 
-    mbuffer = phxfs_get_phony_buffer((struct phxfs_dev *)filp->private_data,
-                                     cpuvaddr, length);
+    mbuffer = phxfs_get_phony_buffer(cpuvaddr, length);
     if (mbuffer == NULL)
         return;
     mutex_lock(&mbuffer->lock);
-    phxfs_mbuffer_unpin(mbuffer);
+    if (mbuffer->dev == dev)
+        phxfs_mbuffer_unpin(mbuffer);
     mutex_unlock(&mbuffer->lock);
     phxfs_mbuffer_put(mbuffer);
 }
@@ -701,20 +703,15 @@ void phxfs_mbuffer_put(phxfs_mmap_buffer_t mbuffer) {
     return phxfs_mbuffer_put_internal(mbuffer);
 }
 
-int phxfs_add_phony_buffer(struct file *filp, struct vm_area_struct *vma) {
+static int phxfs_add_phony_buffer(struct vm_area_struct *vma) {
     u64 buffer_len;
     int ret = -EINVAL;
-    struct phxfs_dev *dev;
     phxfs_mmap_buffer_t phxfs_mbuffer;
 
-    if (WARN_ON(!filp || !vma))
+    if (WARN_ON(!vma))
         return -EINVAL;
 
     buffer_len = vma->vm_end - vma->vm_start;
-
-    dev = (struct phxfs_dev *)filp->private_data;
-    if (dev == NULL)
-        goto error;
 
     phxfs_mbuffer = (phxfs_mmap_buffer_t)kzalloc(sizeof(struct phxfs_mmap_buffer), GFP_KERNEL);
     if (!phxfs_mbuffer) {
@@ -732,8 +729,6 @@ int phxfs_add_phony_buffer(struct file *filp, struct vm_area_struct *vma) {
     mutex_init(&phxfs_mbuffer->lock);
     phxfs_mbuffer->consumed = false;
     phxfs_mbuffer->vma = vma;
-    phxfs_mbuffer->dev = dev;
-    phxfs_mbuffer->dev_id = dev->idx;
     phxfs_mbuffer->c_vaddr = vma->vm_start;
     phxfs_mbuffer->map_len = buffer_len;
     phxfs_mbuffer->remap = 0;
@@ -778,6 +773,9 @@ static const struct vm_operations_struct phxfs_vm_ops = {
 int phxfs_mmap(struct file *filp, struct vm_area_struct *vma) {
     int ret;
     struct mm_struct *mm = current->mm;
+
+    if (vma->vm_pgoff != 0)
+        return -EINVAL;
 #ifdef NVFS_VM_FLAGS_NOT_CONSTANT
     vma->vm_flags &= ~VM_PFNMAP;
     vma->vm_flags &= ~VM_IO;
@@ -796,15 +794,10 @@ int phxfs_mmap(struct file *filp, struct vm_area_struct *vma) {
     vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
     vm_flags_set(vma, vm_flags);
 #endif
-    vma->vm_pgoff = 0;
     vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
-    if (vma->vm_pgoff == 0) {
-        ret = phxfs_add_phony_buffer(filp, vma);
-        if (ret == 0)
-            vma->vm_ops = &phxfs_vm_ops;   /* VMA now owns the buffer */
-        return ret;
-    }
-
-    return -EINVAL;
+    ret = phxfs_add_phony_buffer(vma);
+    if (ret == 0)
+        vma->vm_ops = &phxfs_vm_ops;   /* VMA now owns the buffer */
+    return ret;
 }

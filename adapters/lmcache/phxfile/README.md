@@ -45,20 +45,19 @@ reverse, and the swap happens inside the shim.
 
 ## Device resolution (probe-based)
 
-libphoenix's `phxfs_regmem`/`phxfs_deregmem` still take a phxfs device
-index, but the frozen surface is device-free. The shim resolves the device
-by probing — the same way libphoenix's own stream path resolves buffers at
-IO time:
+libphoenix's `phxfs_regmem`/`phxfs_deregmem` take an accelerator ordinal,
+but the frozen surface is device-free. The shim resolves the device by probing:
 
-- on first use it opens **every FULL-mode phxfs device** (`/dev/phxfs_devN`
-  presence check, then a sysfs `map_mode` lookup, then `phxfs_open`);
+- on first use it checks `/dev/phxfs_dev`, then calls `phxfs_open` for accelerator
+  ordinals; libphoenix resolves the sysfs GPU index and encodes it in subsequent
+  MAP/UNMAP ioctl numbers; mmap only reserves an unbound address range;
 - a registration is attempted on each opened device until one accepts it —
   the kernel P2P mapping only succeeds on the GPU whose BAR covers the
   buffer, and libphoenix rolls failed attempts back cleanly, so probing is
   side-effect-free;
-- **staging-mode devices are skipped**: their stream path is unsupported
-  upstream (`-EOPNOTSUPP`) and opening them would allocate their staging
-  pools for nothing.
+- registration probes **skip non-FULL devices**: this shim requires FULL-mode
+  stream buffers; non-FULL devices opened during discovery are not registration
+  candidates.
 
 Registration is a low-frequency control operation, so the probe loop's
 cost is irrelevant. The shim also keeps the registration bookkeeping

@@ -127,25 +127,22 @@ static void reg_remove(size_t i)
  * ------------------------------------------------------------------ */
 
 /*
- * One-time discovery: open every phxfs device.
- *   - /dev/phxfs_devN absent      -> device does not exist, skip
- *   - phxfs_open failure          -> skip (not retried this process)
- *
- * Returns 0, -ENODEV (no phxfs device present at all) or -EOPNOTSUPP
- * (devices present but none could be opened). Caller holds g_lock.
+ * One-time discovery: probe accelerator ordinals through the unified node.
+ * libphoenix resolves each ordinal to its sysfs GPU index for mmap/ioctl.
+ * Returns 0, -ENODEV (node absent) or -EOPNOTSUPP (no GPU could be opened).
+ * Caller holds g_lock.
  */
 static int probe_devices_locked(void)
 {
     if (g_probed)
         return g_probe_rc;
 
-    int found_any = 0;
+    if (access("/dev/phxfs_dev", F_OK) != 0) {
+        g_probe_rc = -ENODEV;
+        g_probed = 1;
+        return g_probe_rc;
+    }
     for (int d = 0; d < PHXFILE_MAX_DEVS; d++) {
-        char path[32];
-        snprintf(path, sizeof(path), "/dev/phxfs_dev%d", d);
-        if (access(path, F_OK) != 0)
-            continue;
-        found_any = 1;
         if (phxfs_open(d) == 0) {
             g_opened[d] = 1;
             g_nopened++;
@@ -153,7 +150,7 @@ static int probe_devices_locked(void)
     }
 
     if (g_nopened == 0)
-        g_probe_rc = found_any ? -EOPNOTSUPP : -ENODEV;
+        g_probe_rc = -EOPNOTSUPP;
     /* else g_probe_rc stays 0 */
     g_probed = 1;
     return g_probe_rc;
@@ -348,14 +345,4 @@ int phxFileWriteAsync(void *fh, void *buf_base,
     return phxfs_write_stream((int)(intptr_t)fh, buf_base, nbytes,
                               (off_t *)buf_offset, (off_t *)file_offset,
                               (ssize_t *)bytes_done, stream);
-}
-
-int phxFileGetIOStats(phxFileIOStats *out)
-{
-    return phxfs_get_io_stats((phxfs_io_stats_t *)out);
-}
-
-int phxFileResetIOStats(void)
-{
-    return phxfs_reset_io_stats();
 }

@@ -74,7 +74,7 @@ Test tiers:
 Requirements:
   - Run in a Python environment with phxloader installed (activate your conda env)
   - phxloader extension compiled and installed
-  - Hardware tests require: device + /dev/phxfs_dev0
+  - Hardware tests require: device + /dev/phxfs_dev
 EOF
     exit 0
 fi

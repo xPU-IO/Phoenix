@@ -83,8 +83,8 @@ rmmod:
 	sudo rmmod phoenixfs
 install: refresh-pat-snapshot
 	@if [ ! -f phoenixfs.ko ]; then \
-		echo ">> phoenixfs.ko not found (build first, or module disabled); skipping"; \
-		exit 0; \
+		echo ">> phoenixfs.ko not found (run make modules first)" >&2; \
+		exit 1; \
 	fi; \
 	KREL=$$(uname -r); DEST=/lib/modules/$$KREL/extra; \
 	echo ">> installing phoenixfs.ko -> $$DEST"; \

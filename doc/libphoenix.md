@@ -4,7 +4,7 @@
 
 ## Quick start
 
-Public device ids are accelerator ordinals: CUDA device ids for NVIDIA, HIP device ids for AMD, and the corresponding ordinal for other connectors. The internal `/dev/phxfs_devN` index is resolved inside `libphoenix` and is never passed by applications.
+Public device ids are accelerator ordinals: CUDA device ids for NVIDIA, HIP device ids for AMD, and the corresponding ordinal for other connectors. `libphoenix` resolves the internal sysfs GPU index and opens `/dev/phxfs_dev`. Registration reserves an unbound VMA with `mmap(offset=0)`, then encodes the GPU index only in the MAP ioctl number; no separate device-selection call is needed. Applications and adapter APIs are unchanged; the updated module, library and LMCache shim must be deployed together.
 
 For NVIDIA Grace Hopper (H100/GH200), Grace Blackwell, and systems where the direct P2P path may be unavailable, use runtime probing with the generic host-staging fallback:
 
