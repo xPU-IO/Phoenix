@@ -10,6 +10,7 @@ Phoenix is a rebuilt version of GPU Direct Storage (GDS) that lets data flow str
 
 ## 📰 News
 
+- **2026.11.3** GPU vendor +1 ! Phonenix now support Iluvatar GPU.
 - **2026.9.28 NVIDIA Grace Hopper / GB10 support** — public device ids are now CUDA ordinals, while internal `phxfs_devN` indices stay private; `PHXFS_MODE=auto` probes the direct path at open and falls back to a preallocated `host_staging` pool when P2P/BAR mapping is unavailable. Batch and async host staging reuse the existing worker/io_uring pipeline.
 - **2026.9.9** — AMD (MI300 series) support: new `amd` P2P backend (amdkfd peer-direct) and HIP connector, validated on 8× Instinct MI308X 
 - **2026.8.27** — [LMCache Phoenix backend released and merged into upstream](https://github.com/LMCache/LMCache/pull/4673),
