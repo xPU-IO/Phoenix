@@ -32,8 +32,11 @@ add_executable (bar_holder kernel_module_matrix/bar_holder.c)
 # Vendor dispatch: CUDA and CUDA-like runtimes (NVIDIA CUDA, MetaX via the
 # MACA cu-bridge) build from cuda/*.cu; AMD builds from amd/*.hip
 # (hipify-perl output — regenerate with: hipify-perl cuda/test_X.cu > amd/test_X.hip).
+# Iluvatar has no GPU language target: its tests are plain C++.
 if (PHXFS_VENDOR STREQUAL "AMD")
     add_subdirectory (amd)
+elseif (PHXFS_VENDOR STREQUAL "ILUVATAR")
+    add_subdirectory (iluvatar)
 else ()
     add_subdirectory (cuda)
 endif ()
