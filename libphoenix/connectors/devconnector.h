@@ -39,7 +39,8 @@ struct devconn_ops {
      *   NVIDIA: device_id is a CUDA device ID
      *   AMD:    device_id is a HIP device ID
      *   Huawei: device_id is an NPU ID
-     * Returns 0-compatible success/failure through the public helper.
+     * Returns the internal sysfs GPU index, or a negative value on failure.
+     * Only the core uses this index; public APIs still take the ordinal.
      */
     int   (*find_device)(int device_id);
 
@@ -47,8 +48,8 @@ struct devconn_ops {
      * Staging-mode device-memory operations (may be NULL for vendors that
      * do not support the staging path yet; the core checks before use).
      *
-     * mem_alloc:   allocate `size` bytes of device memory on the accelerator
-     *              backing phxfs device index `phxfs_dev`. Returns 0 and sets
+     * mem_alloc:   allocate `size` bytes on the public accelerator ordinal
+     *              `device_id`, not the internal sysfs index. Returns 0 and sets
      *              *dptr, or a negative errno.
      * mem_free:    release a buffer from mem_alloc.
      * memcpy_dtod: synchronous device-to-device copy (dst and src are both
@@ -74,8 +75,8 @@ struct devconn_ops {
      * without knowing anything about vendor stream/queue types.
      *
      * memcpy_dtod_async returns as soon as the copy is enqueued;
-     * queue_sync(phxfs_dev, slot) returns once every copy enqueued on that
-     * queue has completed (and reports any error they raised).
+     * queue_sync(device_id, slot) uses the public accelerator ordinal and
+     * waits for every copy on that queue (reporting any errors).
      *
      * Both may be NULL: the core then falls back to the synchronous
      * memcpy_dtod above, so a vendor only needs the sync op to work.

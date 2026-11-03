@@ -122,9 +122,8 @@ static int nvidia_find_device(int cuda_gpu_id)
 /* Staging-mode device memory operations                              */
 /* ------------------------------------------------------------------ */
 
-/* Reverse of find_device: phxfs index -> CUDA device id, by matching the
- * phxfs sysfs pci_bdf against each CUDA device's PCI bus id. Returns the CUDA
- * device id (>=0) or -1. */
+/* Device-memory operations take the public CUDA ordinal, never a sysfs index.
+ * find_device() performs the separate ordinal-to-kernel-index lookup. */
 static int nvidia_mem_alloc(int device_id, size_t size, void **dptr)
 {
     if (!dptr)

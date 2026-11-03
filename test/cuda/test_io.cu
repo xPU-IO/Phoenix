@@ -513,6 +513,13 @@ int main(int argc, char **argv) {
         printf("FATAL: phxfs_open(%d) failed\n", dev_id);
         return 1;
     }
+    int current_device = -1;
+    bool same_device = cudaGetDevice(&current_device) == cudaSuccess && current_device == dev_id;
+    CHECK(same_device, "phxfs_open preserves CUDA device %d (current=%d)", dev_id, current_device);
+    if (!same_device) {
+        phxfs_close(dev_id);
+        return 1;
+    }
 
     // Part A: Correctness
     printf("\n========== Part A: Correctness ==========\n");

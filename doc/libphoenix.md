@@ -6,6 +6,18 @@
 
 Public device ids are accelerator ordinals: CUDA device ids for NVIDIA, HIP device ids for AMD, and the corresponding ordinal for other connectors. `libphoenix` resolves the internal sysfs GPU index and opens `/dev/phxfs_dev`. Registration reserves an unbound VMA with `mmap(offset=0)`, then encodes the GPU index only in the MAP ioctl number; no separate device-selection call is needed. Applications and adapter APIs are unchanged; the updated module, library and LMCache shim must be deployed together.
 
+Use the same visible CUDA/HIP ordinal for runtime device selection, `phxfs_open`,
+registration, and synchronous/batch I/O. `CUDA_VISIBLE_DEVICES` may renumber GPUs;
+never pass a sysfs index or a host `nvidia-smi` index as the public device id.
+`phxfs_open` preserves the calling thread's current CUDA device. The library
+matches PCI BDFs to obtain the separate kernel index used only for MAP/UNMAP.
+
+FULL I/O resolves `(device_id, buffer)` to the registered GPU-backed VMA; the I/O
+`fd` is the storage file, not `/dev/phxfs_dev`. STAGING I/O selects that ordinal's
+staging pool and device-copy queues. Stream APIs are device-free: they resolve
+FULL registrations or query the GPU pointer's owning ordinal for STAGING.
+`test_stream [file] [gpu_id]` follows the same public ordinal convention.
+
 For NVIDIA Grace Hopper (H100/GH200), Grace Blackwell, and systems where the direct P2P path may be unavailable, use runtime probing with the generic host-staging fallback:
 
 ```bash

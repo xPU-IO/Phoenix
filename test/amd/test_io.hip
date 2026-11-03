@@ -503,7 +503,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    int dev_id = phxfs_find_dev_for_cuda_gpu(cuda_gpu_id);
+    int dev_id = cuda_gpu_id;
     if (dev_id < 0) {
         printf("FATAL: no phxfs device for CUDA GPU %d\n", cuda_gpu_id);
         return 1;
@@ -512,6 +512,13 @@ int main(int argc, char **argv) {
 
     if (phxfs_open(dev_id) != 0) {
         printf("FATAL: phxfs_open(%d) failed\n", dev_id);
+        return 1;
+    }
+    int current_device = -1;
+    bool same_device = hipGetDevice(&current_device) == hipSuccess && current_device == dev_id;
+    CHECK(same_device, "phxfs_open preserves HIP device %d (current=%d)", dev_id, current_device);
+    if (!same_device) {
+        phxfs_close(dev_id);
         return 1;
     }
 

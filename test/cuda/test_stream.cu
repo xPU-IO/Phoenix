@@ -13,7 +13,7 @@
 // could lag the consumer kernel), which is why the model was replaced.
 //
 // Build: via CMake (make test_stream)
-// Run:   ./test_stream [file]     (default TEST_FILE, O_DIRECT-capable fs)
+// Run:   ./test_stream [file] [cuda_gpu] (default TEST_FILE and visible ordinal 0)
 
 #include <cstdio>
 #include <cstdint>
@@ -134,19 +134,26 @@ int main(int argc, char **argv) {
     printf("== phx stream-ordered I/O test, host-function model (file=%s) ==\n", path);
 
     // ---- environment ----
-    int gpu = 0;
-    if (cudaGetDeviceCount(&gpu) != cudaSuccess || gpu == 0) {
+    int device_count = 0;
+    if (cudaGetDeviceCount(&device_count) != cudaSuccess || device_count == 0) {
         SKIP("no CUDA device visible");
         printf("%d run, %d passed, %d failed, %d skipped\n",
                tests_run, tests_passed, tests_failed, tests_skipped + 1);
         return 0;
     }
-    int dev = 0;
-    if (dev < 0) {
-        SKIP("phxfs device not found for CUDA device 0 (module loaded?)");
-        printf("%d run, %d passed, %d failed, %d skipped\n",
-               tests_run, tests_passed, tests_failed, tests_skipped + 1);
-        return 0;
+    char *end = NULL;
+    errno = 0;
+    long requested = (argc > 2) ? strtol(argv[2], &end, 10) : 0;
+    if (argc > 3 || errno || (argc > 2 && (end == argv[2] || *end)) ||
+        requested < 0 || requested >= device_count) {
+        fprintf(stderr, "usage: %s [file] [cuda_gpu]; GPU must be a visible CUDA ordinal\n", argv[0]);
+        return 2;
+    }
+    const int dev = (int)requested;
+    cudaError_t set_rc = cudaSetDevice(dev);
+    if (set_rc != cudaSuccess) {
+        fprintf(stderr, "FATAL: cudaSetDevice(%d): %s\n", dev, cudaGetErrorString(set_rc));
+        return 1;
     }
     if (phxfs_open(dev) != 0) {
         SKIP("phxfs_open(%d) failed", dev);
@@ -154,7 +161,14 @@ int main(int argc, char **argv) {
                tests_run, tests_passed, tests_failed, tests_skipped + 1);
         return 0;
     }
-    printf("phxfs dev=%d, page=%llu, map_mode=%s\n", dev,
+    int current_device = -1;
+    bool same_device = cudaGetDevice(&current_device) == cudaSuccess && current_device == dev;
+    CHECK(same_device, "phxfs_open preserves CUDA device %d (current=%d)", dev, current_device);
+    if (!same_device) {
+        phxfs_close(dev);
+        return 1;
+    }
+    printf("CUDA/phxfs public device=%d, page=%llu, map_mode=%s\n", dev,
            (unsigned long long)phxfs_get_page_size(),
            phxfs_get_map_mode(dev) == 0 ? "FULL" : "STAGING");
     if (phxfs_get_map_mode(dev) > 1) {
