@@ -44,7 +44,9 @@ public:
 #endif
 
 #define HUGE_PAGE_SIZE   (64 * 1024)   /* NVIDIA GPU page size */
-#define PHXFS_MAX_DEVICES 8
+/* Must match the kernel's MAX_DEV_NUM and the 4-bit GPU field in the
+ * MAP/UNMAP ioctl encoding (PHXFS_IOCTL_GPU_LIMIT). */
+#define PHXFS_MAX_DEVICES 16
 
 /* BAR mapping mode, read from the kernel (sysfs map_mode) at device open.
  * Mirrors PHXFS_MAP_MODE_* in the kernel module's phxfs.h. */

@@ -31,9 +31,9 @@
 #include "devconnector.h"
 
 #define NV_MAX_GPUS 64        /* CUDA-GPU cache size */
-/* sysfs scan bound: must match the core's PHXFS_MAX_DEVICES (phoenix.cpp), as
- * find_device returns a phxfs index the core can actually open. */
-#define PHXFS_DEV_SCAN_MAX 8
+/* sysfs scan bound: must match PHXFS_MAX_DEVICES and the kernel's 16-device
+ * table, so find_device() can resolve GPU indices 0..15. */
+#define PHXFS_DEV_SCAN_MAX 16
 
 /* ------------------------------------------------------------------ */
 /* Device discovery: CUDA device ID → phxfs index via PCI BDF match  */
