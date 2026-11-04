@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
 # run_matrix.sh — Phoenix test matrix: module load modes x libphoenix modes x
 # I/O APIs x raw ioctl contract, with a kernel-log/taint check after every case.
 #

@@ -5,6 +5,7 @@ title: "[BUG] <short summary>"
 labels: bug
 assignees: ''
 ---
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 
 ## Environment
 

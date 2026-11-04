@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Architecture
 
 Phoenix refactors the I/O stack for **GPU Direct Storage (GDS)** so that data moves from storage straight into accelerator memory via DMA, without being staged through CPU host memory ("phony buffers"). It is structured as a thin middleware layer that AI applications integrate through *adapters*.

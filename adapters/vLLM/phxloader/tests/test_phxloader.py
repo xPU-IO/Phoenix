@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Hardware-dependent tests for PhxLoader (require device + phxfs device).
 
 All tests are decorated with ``@skip_no_hardware`` and will be skipped

@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Kernel Module — `phxfs`
 
 The `phxfs` kernel module is the core of Phoenix. It remaps GPU PCIe BAR memory via `ZONE_DEVICE` and exposes a single character device, `/dev/phxfs_dev`, for all GPUs. GPU routing is stateless at the file level: `mmap` reserves an unbound CPU address range, and MAP/UNMAP encode the GPU in the ioctl number. The first MAP attempt passing basic argument checks fixes that VMA's GPU until teardown. Numbered `/sys/class/phxfs-generic/phxfs_devN` directories contain discovery metadata only; no numbered character nodes are created.

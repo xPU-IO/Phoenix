@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # HOST deregistration lifetime regression
 
 Builds the production device, mapping, HOST transfer and batch code with ASan.

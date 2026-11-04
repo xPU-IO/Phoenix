@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Roadmap
 
 Phoenix is evolving from a research artifact (SC'25) into a long-term open-source middleware for storage→xPU I/O. The roadmap below is split into **engineering** (hardening for production) and **research** (new capabilities) tracks.

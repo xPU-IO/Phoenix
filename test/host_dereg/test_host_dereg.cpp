@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Same production lifecycle and test for CPU mocks and the CUDA connector.
 // memfd stores only 4 KiB in memory: no filesystem/disk benchmark or module.
 #include <cerrno>

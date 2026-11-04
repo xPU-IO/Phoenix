@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // CPU-only unit tests for the synchronous batch API and sync I/O engine.
 
 #include <cerrno>

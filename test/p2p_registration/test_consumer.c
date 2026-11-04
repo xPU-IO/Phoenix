@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #include <linux/compat.h>
 #include <linux/fs.h>
 #include <linux/miscdevice.h>

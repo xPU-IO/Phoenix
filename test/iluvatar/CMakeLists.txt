@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Needs phoenixfs in FULL mode and an O_DIRECT file.
 add_executable (test_iluvatar_roundtrip test_full_roundtrip.cc)
 add_dependencies (test_iluvatar_roundtrip libphoenix)

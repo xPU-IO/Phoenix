@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // CPU-only connector for testing production HOST lifetime code, not GPU DMA.
 #include <cerrno>
 #include <cstdlib>
@@ -26,6 +27,4 @@ int devconn_init() {
     ops.memcpy_d2h = copy;
     return 0;
 }
-int phx_connector_probe_alloc(int d, size_t n, void **p) { return device_alloc(d, n, p); }
-void phx_connector_probe_free(void *p) { free(p); }
 }

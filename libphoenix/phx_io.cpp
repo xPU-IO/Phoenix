@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /*
  * phx_io.cpp — single-request read/write, batch I/O, and async batch.
  */

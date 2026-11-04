@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Phoenix
 
 **An open-source, refactored GPU Direct Storage (GDS) I/O stack — without phony buffers.**
@@ -107,3 +108,8 @@ If you use Phoenix in your research, please cite our SC'25 paper:
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE).
+
+`module/configure` contains third-party NVIDIA MIT-licensed code; its original
+copyright and permission notice are preserved. The kernel module keeps
+`MODULE_LICENSE("GPL")` solely as a runtime requirement for GPL-only kernel
+symbols; it does not change the Apache-2.0 licence of the source files.

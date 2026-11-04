@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /*
  * phx_staging.cpp — staging-mode I/O path (PHX_MAP_MODE_STAGING).
  *

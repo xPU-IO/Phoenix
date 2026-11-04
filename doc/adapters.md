@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Adapters
 
 Adapters connect Phoenix to AI applications through `libphoenix`: vLLM uses `pybind11` bindings, while the official LMCache GDS backend uses the `libphxfile.so` C shim via ctypes.

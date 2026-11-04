@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Iluvatar FULL-mode correctness suite.
 // Covers registration, synchronous read/write, synchronous batch,
 // asynchronous batch (submit/wait/cancel/destroy), stream-ordered I/O,

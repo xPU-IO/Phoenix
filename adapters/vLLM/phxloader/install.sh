@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
 # Convenience script to install/reinstall phxloader in conda environment.
 # Prerequisite: conda activate /mnt/nvme4/dataset/conda_envs/phoenix_lmcache
 # Usage: bash install.sh

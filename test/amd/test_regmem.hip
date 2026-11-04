@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // test_regmem.cu
 //
 // Tests for phxfs memory registration lifecycle:

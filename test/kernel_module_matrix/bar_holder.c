@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // bar_holder — hold a write-combining userspace mapping over a GPU's PCI BAR.
 //
 // Reproduces, without any second kernel module, the field condition behind

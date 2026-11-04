@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #ifndef PHXFILE_H
 #define PHXFILE_H
 /* phxfile.h — Phoenix file-IO frozen ABI for LMCache (GDS L1 tier).

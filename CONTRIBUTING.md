@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Contributing to Phoenix
 
 Thanks for your interest in Phoenix! This guide covers how to report issues and how to propose changes.

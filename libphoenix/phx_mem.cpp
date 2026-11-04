@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /*
  * phx_mem.cpp — GPU memory registration, mapping, and buffer resolution.
  */
@@ -13,9 +14,6 @@
 
 #include "include/phoenix.h"
 #include "phx_internal.h"
-
-/* Vendor connector hook: allocate/free a small device probe buffer without
- * exposing CUDA/HIP headers to the core. */
 
 /* Forward decl: defined below, called by free_phxfs_p2p_map. */
 static int __phxfs_deregmem(phxfs_mmap_buffer_t *pb, u64 dev_addr, u64 c_addr, size_t len);

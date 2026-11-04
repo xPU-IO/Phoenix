@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // FULL check: one 4KiB write and one 4KiB read of a cudaMalloc buffer.
 // Run only when phxfs_map_mode=0. The file path is required.
 #include <cuda_runtime.h>

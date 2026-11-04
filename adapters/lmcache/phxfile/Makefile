@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Build libphxfile.so — the frozen-ABI shim over libphoenix for LMCache.
 #
 # Prerequisites (system-wide):

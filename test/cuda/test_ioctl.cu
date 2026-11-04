@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // test_ioctl.cu — raw /dev/phxfs_dev GPU encoding + mmap + MAP/UNMAP contract
 // tests. Talks to the kernel module directly (no libphoenix), so it covers
 // inputs libphoenix never produces: bad lengths, foreign/split/moved VMAs,

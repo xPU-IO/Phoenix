@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Read group construction for Phoenix selective tensor loading.
 
 A ReadGroup merges adjacent tensors (gap < merge_threshold) into a single

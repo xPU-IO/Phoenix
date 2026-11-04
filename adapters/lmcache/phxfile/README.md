@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # libphxfile — frozen-ABI shim between LMCache and libphoenix
 
 `libphxfile.so` freezes the file-IO surface the official LMCache GDS `phx`

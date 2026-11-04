@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #include <asm/page.h>
 #include <linux/version.h>
 #include <linux/miscdevice.h>
@@ -1226,6 +1227,10 @@ static void __exit phxfs_exit(void) {
 module_init(phxfs_init);
 module_exit(phxfs_exit);
 
+/* The source files are Apache-2.0. This runtime tag must stay GPL-compatible:
+ * the module resolves GPL-only kernel exports (devm_memremap_pages,
+ * class_create, ...), which the loader refuses for Apache-2.0-only modules.
+ * It is a symbol-resolution requirement, not a relicensing of the source. */
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("qiushi <qiushijsxs@outlook.com>");
 MODULE_DESCRIPTION("Phoenix direct storage for multi-vendor accelerators");

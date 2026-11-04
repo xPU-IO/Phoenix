@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Shared fixtures and hardware detection for phxloader unit tests."""
 
 import json

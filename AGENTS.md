@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # AGENTS.md — Phoenix developer orientation (for AI coding agents)
 
 This file is the **single entry point** for AI agents working in this repository. Read it first; do **not** read the whole tree unless a task requires it. Detailed docs live in `doc/`.

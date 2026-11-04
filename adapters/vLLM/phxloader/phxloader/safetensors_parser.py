@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Safetensors header parser for Phoenix weight loading.
 
 Parses the JSON header to extract tensor metadata without reading

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // test_stream.cu
 //
 // phxfs_read_stream / phxfs_write_stream — stream-ordered asynchronous

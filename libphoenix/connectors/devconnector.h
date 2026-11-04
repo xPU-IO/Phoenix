@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #ifndef __DEVCONNECTOR_H__
 #define __DEVCONNECTOR_H__
 

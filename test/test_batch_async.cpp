@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // CPU-only unit tests for the asynchronous batch API: submit / wait /
 // destroy lifecycle, per-request result copy-back, failure isolation and
 // worker-pool queueing (pipelined submits). It forces the sync engine

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /* Host-staging fallback pool. */
 #include <cerrno>
 #include <cstdio>

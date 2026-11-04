@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Build script for phxloader pybind11 extension."""
 
 import os
@@ -92,4 +93,6 @@ setup(
     cmdclass={"build_ext": build_ext},
     install_requires=[],
     python_requires=">=3.10",
+    license="Apache-2.0",
+    classifiers=["License :: OSI Approved :: Apache Software License"],
 )

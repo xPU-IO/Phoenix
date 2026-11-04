@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /*
  * NVIDIA DevConnector
  *
@@ -153,20 +154,10 @@ static int nvidia_mem_alloc(int device_id, size_t size, void **dptr)
     return 0;
 }
 
-extern "C" int phx_connector_probe_alloc(int device_id, size_t size, void **ptr)
-{
-    return nvidia_mem_alloc(device_id, size, ptr);
-}
-
 static void nvidia_mem_free(void *dptr)
 {
     if (dptr)
         cudaFree(dptr);
-}
-
-extern "C" void phx_connector_probe_free(void *ptr)
-{
-    nvidia_mem_free(ptr);
 }
 
 /* Synchronous device-to-device copy. cudaMemcpy(...DeviceToDevice) does not

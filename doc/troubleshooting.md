@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Troubleshooting — Kernel Module Installation
 
 Because Phoenix uses `ZONE_DEVICE` to provide memory-mapping services, no other application or kernel driver may be using the GPU's PCIe BAR resources when `phxfs.ko` is inserted.

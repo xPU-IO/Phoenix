@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #include "hip/hip_runtime.h"
 // test_stream.cu
 //

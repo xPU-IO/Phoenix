@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # GPU 厂商适配指南 / GPU Vendor Porting Guide
 
 面向尚未适配 Phoenix 的 GPU/NPU 厂商，讲解如何把一块新卡接入 Phoenix 的"存储 → 加速器直通 DMA"数据通路。核心适配面只有两处：内核模块的 P2P 后端（`module/<vendor>-backend.c`）和用户态库的设备连接器（`libphoenix/connectors/<vendor>_connector.cpp`）。

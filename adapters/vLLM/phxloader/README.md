@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # phxloader — Phoenix DMA Loader for GPU Direct Storage
 
 正式发行包，提供基于 Phoenix GDS（GPU Direct Storage）的 safetensors 权重高速加载能力，通过 DMA 直接从 NVMe 存储传输到 GPU 显存，绕过 CPU 内存中转。

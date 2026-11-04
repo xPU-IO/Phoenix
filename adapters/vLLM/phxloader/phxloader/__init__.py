@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Phoenix DMA loader for GPU Direct Storage."""
 
 from phxloader._phxloader import PhxLoader

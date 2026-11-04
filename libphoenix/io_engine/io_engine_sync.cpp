@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /*
  * Synchronous batch engine — always-available fallback.
  *

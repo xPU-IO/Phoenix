@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
 # Build and install libphxfile.so — the frozen-ABI shim between LMCache and
 # libphoenix (see README.md). Installs to /usr/local; the build itself is
 # unprivileged, only the install step needs sudo.

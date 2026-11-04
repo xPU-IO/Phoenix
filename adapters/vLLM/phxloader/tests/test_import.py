@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Import and API-surface tests for phxloader (no hardware required).
 
 Verifies that the compiled extension and Python modules can be imported

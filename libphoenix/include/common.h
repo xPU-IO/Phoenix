@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #ifndef __PHXFS_COMMOM_H__
 #define __PHXFS_COMMOM_H__
 #include <linux/types.h>

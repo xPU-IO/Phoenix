@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # AMD tests: hipify-perl-converted *.hip sources (cuda/test_X.cu is the
 # source of truth; regenerate with: hipify-perl cuda/test_X.cu > test_X.hip).
 # The CMake HIP language drives hipcc, which links the HIP runtime

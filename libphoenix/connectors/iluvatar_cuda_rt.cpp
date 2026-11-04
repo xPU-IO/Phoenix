@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /*
  * Load the libcuda that matches the running iluvatar.ko, then the
  * libcudart that sits in the same directory.

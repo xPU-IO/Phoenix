@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for read_group.py (pure Python, no hardware).
 
 Covers:

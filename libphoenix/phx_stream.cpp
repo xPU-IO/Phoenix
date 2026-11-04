@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /*
  * phx_stream.cpp — stream-ordered async I/O via a CUDA host function.
  *

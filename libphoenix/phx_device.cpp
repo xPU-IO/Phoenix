@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /*
  * phx_device.cpp — device lifecycle: open / close / operation refcounting.
  */

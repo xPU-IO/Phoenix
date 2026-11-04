@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Isolated CPU-only fault injection. Reuses the existing HOST connector/core;
 // the new override is never linked into test_host_dereg or the production library.
 #include <atomic>
