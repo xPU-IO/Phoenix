@@ -41,9 +41,11 @@ extern int phxfs_debug;
 
 /*
  * FULL mode only: block size at which the BAR is probed for PAT conflicts and
- * split into segments at probe time. Pure probe bookkeeping.
+ * split into segments at probe time. Use sparsemem sub-section granularity
+ * (2 MiB) to limit how much usable BAR space a conflict also excludes.
+ * Adjacent conflict-free blocks are still merged into larger segments.
  */
-#define PHXFS_REMAP_UNIT_SIZE  ((u64)16 * 1024 * 1024)  /* 16 MiB probe block */
+#define PHXFS_REMAP_UNIT_SIZE  PHXFS_REMAP_ALIGN
 
 /*
  * STAGING mode: alignment (and size multiple) every remapped span must have.

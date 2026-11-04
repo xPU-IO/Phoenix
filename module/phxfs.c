@@ -24,6 +24,7 @@
 #include <linux/thread_info.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
+#include <linux/vmalloc.h>
 #include <linux/xarray.h>
 
 #include "config-host.h"
@@ -177,8 +178,9 @@ static int phxfs_devm_memremap(struct phxfs_dev *phx_dev) {
 
 		/* Detect PAT conflicts within [paddr, paddr + size). One extra
 		 * slot is reserved below for the p2pdma bootstrap slice, so a
-		 * full PAT table can never crowd it out. */
-		conflicts = kcalloc(max_blocks + 1, sizeof(struct phxfs_pat_conflict), GFP_KERNEL);
+		 * full PAT table can never crowd it out. At sub-section granularity
+		 * this array can be large; allow vmalloc backing. */
+		conflicts = kvcalloc(max_blocks + 1, sizeof(*conflicts), GFP_KERNEL);
 		if (!conflicts)
 			return -ENOMEM;
 
@@ -201,7 +203,7 @@ static int phxfs_devm_memremap(struct phxfs_dev *phx_dev) {
 	if (n_conflicts < 0) {
 		phxfs_warn("phxfs%d: PAT conflict detection failed (%d), "
 		       "falling back to full BAR remap\n", phx_dev->idx, n_conflicts);
-		kfree(conflicts);
+		kvfree(conflicts);
 		/* Fallback: remap entire BAR as single segment */
 		goto fallback_single;
 	}
@@ -247,7 +249,7 @@ static int phxfs_devm_memremap(struct phxfs_dev *phx_dev) {
 		n_segments = phxfs_compute_bar_segments(phx_dev->paddr, phx_dev->size,
 						conflicts, n_conflicts, &segs);
 	}
-	kfree(conflicts);
+	kvfree(conflicts);
 
 	if (n_segments <= 0) {
 		phxfs_warn("phxfs%d: no valid segments computed, "

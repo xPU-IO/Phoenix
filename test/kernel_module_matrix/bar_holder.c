@@ -94,8 +94,8 @@ int main(int argc, char **argv) {
          * "full" only: some machines already hold a small non-WB PAT entry
          * at the BAR's very end (e.g. the GPU driver's own uncached range);
          * a WC mmap overlapping it fails with EINVAL, so back off 1MiB at a
-         * time until the mapping fits. A few MiB of slack still leave every
-         * 16MiB probe block conflicted.
+         * time until the mapping fits. The remaining window still exercises
+         * a large WC overlap.
          */
         if (strcmp(mode, "full") != 0 || errno != EINVAL ||
             len <= best_size / 2) {
