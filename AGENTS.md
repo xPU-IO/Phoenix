@@ -5,7 +5,7 @@ This file is the **single entry point** for AI agents working in this repository
 
 ## What this project is
 
-Phoenix is middleware for **direct I/O from storage to xPU (GPU/NPU)** via DMA, bypassing CPU host memory ("phony buffers"). Three layers: a Linux kernel module (`phxfs`), a user-space library (`libphoenix`), and application **adapters** (vLLM via pybind11; official LMCache GDS via the `phxfile` C shim). Multi-vendor support (NVIDIA/AMD/Huawei) is selected at build time via `PHXFS_VENDOR`; only NVIDIA is implemented today, but the backend interfaces are vendor-agnostic.
+Phoenix is middleware for **direct I/O from storage to xPU (GPU/NPU)** via DMA, bypassing CPU host memory ("phony buffers"). Three layers: a Linux kernel module (`phxfs`), a user-space library (`libphoenix`), and application **adapters** (vLLM via pybind11; official LMCache GDS via the `phxfile` C shim). Multi-vendor support is selected at build time via `PHXFS_VENDOR`; NVIDIA, MetaX, and Iluvatar backends are implemented, and the backend interfaces are vendor-agnostic.
 
 ## Directory map (responsibilities)
 
@@ -21,16 +21,21 @@ Phoenix is middleware for **direct I/O from storage to xPU (GPU/NPU)** via DMA, 
 ## Build / test / install (reference environment)
 
 ```shell
-# prerequisites: NVIDIA GDS + MLNX_OFED, kernel source for running kernel, CUDA 12.4, liburing
-mkdir -p build && cd build && cmake ../ && make -j    # user library + tests; default vendor: NVIDIA
-make modules              # explicitly build kernel module
+# Configure first; each make target checks its own dependencies.
+mkdir -p build && cd build && cmake ../
+make modules              # kernel build tree + driver P2P header; no CUDA Toolkit
+make libphoenix           # C++20 compiler + CUDA 12.4+ headers/cudart; no nvcc
+make tests                # CPU + GPU tests; GPU tests require nvcc on NVIDIA
 sudo make insmod          # insert kernel module (run `nvidia-smi` first)
 sudo make rmmod           # remove
 ./bin/test_regmem 0       # memory registration lifecycle tests
 ./bin/test_io 0           # I/O correctness + performance tests
 ```
-Default `make` builds user space; `make install` installs only the library and headers. Use `make install with_module` to also build and install the kernel module.
+Default `make` builds only the user library. `make install` installs the library and headers. Use `make install with_module` to also build and install the kernel module; `make install_modules` handles only the module.
+`cmake ..` enables no compiler language and does not probe optional SDKs. Public targets configure separate child builds under `build/.components/` when invoked. Use `make cpu_tests`, `make gpu_tests`, or individual targets such as `make test_regmem`; no component-selection CMake flags are needed. Outputs stay in `build/libphoenix.so`, `build/bin/`, and `build/module/`.
+NVIDIA module builds select `nv-p2p.h` by the loaded **driver** version from `extra_headers/` or driver sources. Preserve upstream header licenses and provenance; see `extra_headers/README.md`. An explicit `-DNVIDIA=/path/to/driver/headers` overrides selection. Optional liburing enables the io_uring engine; missing liburing falls back to the sync engine.
 Target a different vendor: `cmake -DPHXFS_VENDOR=AMD ../` (requires implementing `module/amd-backend.c` + `libphoenix/connectors/amd_connector.cpp` first).
+Iluvatar uses `-DPHXFS_VENDOR=ILUVATAR` and CoreX headers (`COREX_PATH`, default `/usr/local/corex`). Its tests are C++ targets `test_iluvatar_roundtrip` and `test_iluvatar_suite`; they require no nvcc.
 
 ## Common tasks
 

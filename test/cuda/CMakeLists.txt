@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # CUDA / CUDA-like tests (NVIDIA CUDA, MetaX via MACA cu-bridge).
-if (PHXFS_VENDOR STREQUAL "NVIDIA")
-    find_package (CUDA 12.4 REQUIRED)
-endif ()
-
 set (TEST_GPU_SUFFIX ".cu")
 
 # --- test_regmem: memory registration lifecycle ---

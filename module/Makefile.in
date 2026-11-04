@@ -9,7 +9,7 @@ PHXFS_VENDOR_SOURCE := $(patsubst %.o,%.c,@VENDOR_BACKEND@)
 PHXFS_SOURCE_FILES := phxfs-mem.c phxfs-backend.c $(PHXFS_VENDOR_SOURCE) phxfs.c phxfs-p2p-service.c phxfs-p2pdma.c
 
 phoenixfs-objs := phxfs-mem.o phxfs-backend.o @VENDOR_BACKEND@ phxfs.o phxfs-p2p-service.o phxfs-p2pdma.o
-KERNEL_SRC := /lib/modules/$(KVER)/build
+KERNEL_SRC ?= @KERNEL@
 PAT_MEMTYPE_SOURCE := /sys/kernel/debug/x86/pat_memtype_list
 PAT_MEMTYPE_SNAPSHOT := /run/phxfs/pat_memtype_list
 
@@ -34,7 +34,7 @@ prepare_sources:
 endif
 
 configure: prepare_sources
-	@ @module_root@/configure $(KVER) @module_root@
+	@KDIR="$(KERNEL_SRC)" @module_root@/configure $(KVER) @module_root@
 
 # kernel_read() cannot consume the legacy debugfs .read implementation on
 # modern kernels. Snapshot it from user space into a regular tmpfs file first.

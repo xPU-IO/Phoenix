@@ -13,7 +13,7 @@
 #include "phxfs-backend.h"
 #include "phxfs.h"       /* phxfs_err / phxfs_info */
 
-/* NVIDIA driver P2P API — nv-p2p.h is provided by the NVIDIA driver source */
+/* NVIDIA driver P2P API — selected from extra_headers or driver source. */
 #include "nv-p2p.h"
 
 /* Function pointer types for NVIDIA P2P symbols (loaded via __symbol_get) */
@@ -136,6 +136,22 @@ static int nvidia_get_pages(uint64_t vaddr, uint64_t length,
 	if (err) {
 		kfree(h);
 		return err;
+	}
+	/* The driver allocates this structure; verify its ABI before reading pages. */
+	{
+		struct nvidia_p2p_page_table *npt = h->priv;
+		if (!npt) {
+			kfree(h);
+			return -EIO;
+		}
+		if (!NVIDIA_P2P_PAGE_TABLE_VERSION_COMPATIBLE(npt) ||
+		    npt->page_size != NVIDIA_P2P_PAGE_SIZE_64KB) {
+			phxfs_err("phxfs: unsupported NVIDIA page table: version=0x%x (header=0x%x), page_size=%u\n",
+				  npt->version, NVIDIA_P2P_PAGE_TABLE_VERSION, npt->page_size);
+			nvidia_p2p_put_pages_p(0, 0, vaddr, npt);
+			kfree(h);
+			return -EOPNOTSUPP;
+		}
 	}
 	*pt = h;
 	return 0;

@@ -37,8 +37,10 @@ Phoenix is pre-1.0: **there is no stable ABI yet.** Exported symbols, struct lay
 
 ```shell
 # Default: NVIDIA GPU (no extra flags needed)
-mkdir -p build && cd build && cmake ../ && make -j
+mkdir -p build && cd build && cmake ../
+make libphoenix
 make modules
+make tests
 
 # For other vendors (not yet implemented, interface ready):
 # cmake -DPHXFS_VENDOR=AMD ../
@@ -46,6 +48,7 @@ make modules
 ```
 
 This produces:
+
 - `build/libphoenix.so` — user-space library
 - `build/module/phoenixfs.ko` — kernel module
 - `build/bin/test_regmem`, `build/bin/test_io` — test programs

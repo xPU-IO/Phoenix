@@ -101,7 +101,7 @@ else
 	export KVER=${_KVER}
 fi
 export MODULES_DIR=/lib/modules/$KVER
-export KDIR=$MODULES_DIR/build
+export KDIR=${KDIR:-$MODULES_DIR/build}
 
 cat > $MAKEFILE <<EOF
 obj-m += test.o

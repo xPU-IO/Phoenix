@@ -1,329 +1,125 @@
 # SPDX-License-Identifier: Apache-2.0
-cmake_minimum_required (VERSION 3.18)
+cmake_minimum_required(VERSION 3.18)
+# Public targets configure their own toolchains when make invokes them.
+project(Phoenix LANGUAGES NONE)
 
-# Vendor selection must be set before project() so we can conditionally
-# enable the CUDA language.
-set (PHXFS_VENDOR "NVIDIA" CACHE STRING "Target GPU vendor: NVIDIA, METAX, AMD, HUAWEI, ILUVATAR")
-set_property (CACHE PHXFS_VENDOR PROPERTY STRINGS NVIDIA METAX AMD HUAWEI ILUVATAR)
-
-if (PHXFS_VENDOR STREQUAL "NVIDIA")
-    project (libphoenix LANGUAGES CUDA C CXX)
-    # NVIDIA Hopper and Grace Hopper (H100/GH200) use SM90.
-    set (CMAKE_CUDA_ARCHITECTURES 90)
-    set (CMAKE_CUDA_STANDARD 20)
-elseif (PHXFS_VENDOR STREQUAL "METAX")
-    if(DEFINED ENV{MACA_PATH})
-        set(WCUDA_PATH $ENV{MACA_PATH}/tools/cu-bridge)
-    else()
-        message(FATAL_ERROR "Please set env parameter MACA_PATH")
-    endif()
-    set(CMAKE_MODULE_PATH "${WCUDA_PATH}/cmake_module/maca")
-    set(CMAKE_C_COMPILER "${WCUDA_PATH}/bin/cucc")
-    set(CMAKE_CXX_COMPILER "${WCUDA_PATH}/bin/cucc")
-    set(CMAKE_CUDA_COMPILER "${WCUDA_PATH}/bin/cucc")
-    set(CMAKE_LINKER "${WCUDA_PATH}/bin/cucc")
-    set(CMAKE_C_LINK_EXECUTABLE "<CMAKE_LINKER> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
-    set(CMAKE_CXX_LINK_EXECUTABLE "<CMAKE_LINKER> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
-    set(CMAKE_CUDA_LINK_EXECUTABLE "<CMAKE_LINKER> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
-
-    project (libphoenix LANGUAGES CUDA C CXX)
-    set (CMAKE_CUDA_STANDARD 20)
-else ()
-    project (libphoenix LANGUAGES C CXX)
-endif ()
-
-set (CMAKE_C_STANDARD 99)
-set (CMAKE_CXX_STANDARD 20)
-set (CMAKE_CXX_STANDARD_REQUIRED ON)
-
-find_package (Threads REQUIRED)
-
-# CUDA is only required for NVIDIA vendor
-if (PHXFS_VENDOR STREQUAL "NVIDIA")
-    find_package (CUDA 12.4 REQUIRED)
-    find_package (CUDAToolkit REQUIRED)
-    find_library (CUFILE_LIBRARIES cufile ${CUDA_TOOLKIT_ROOT_DIR}/lib64)
-endif ()
-
-find_package(PkgConfig REQUIRED)
-
-set (no_liburing false CACHE BOOL "Do not use liburing (io_uring async I/O)")
-set (phx_nvtx true CACHE BOOL "Emit NVTX ranges from libphoenix (for nsys)")
-
-if (NOT no_liburing)
-    pkg_check_modules(LIBURING liburing)
-    if (LIBURING_FOUND)
-        message(STATUS "liburing found: ${LIBURING_INCLUDE_DIRS}")
-    else ()
-        message(STATUS "liburing NOT found - io_uring async disabled")
-    endif ()
-else ()
-    message(STATUS "liburing disabled by no_liburing=ON")
-endif ()
-
-if (LIBURING_FOUND)
-    add_compile_definitions(PHXFS_HAVE_LIBURING)
-endif ()
-
-set (NVIDIA "" CACHE PATH "Path to Nvidia driver source")
-set (KERNEL "/lib/modules/${CMAKE_SYSTEM_VERSION}/build" CACHE PATH "Path to kernel source, or module directory")
-
-set (nvidia_archs "90" CACHE STRING "NVIDIA compute architectures (SM90 covers Hopper/Grace Hopper)")
-set (BUILD_SHARED_LIBS true CACHE BOOL "Build shared library, set to false for static")
-# Default BAR mapping mode baked into phoenixfs.ko: "staging" (default) or
-# "full". Still overridable at load time via the phxfs_map_mode module param.
-set (PHXFS_MAP_MODE "staging" CACHE STRING "default BAR mapping mode: full or staging")
-set_property (CACHE PHXFS_MAP_MODE PROPERTY STRINGS full staging)
-
-if (no_smartio)
-    set (no_smartio_samples true)
-    set (no_smartio_benchmarks true)
-endif ()
-
-# Set global compiler flags
-set (GPU_ARCHS "" CACHE INTERNAL "" FORCE)
-foreach (arch ${nvidia_archs})
-    string (CONCAT GPU_ARCHS ${GPU_ARCHS} " -gencode arch=compute_${arch},code=sm_${arch}")
-endforeach ()
-
-set (convert_warnings implicit-function-declaration incompatible-pointer-types int-conversion return-type unused-function unused-variable)
-set (flags "")
-foreach (flag ${convert_warnings})
-    string (APPEND flags " -Werror=${flag}")
-endforeach()
-
-# C_FLAGS
-set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra ${flags}" CACHE INTERNAL "" FORCE)
-set (CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_DEBUG} -g -DDEBUG" CACHE INTERNAL "" FORCE)
-set (CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O2" CACHE INTERNAL "" FORCE)
-# CXX_FLAGS
-set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra" CACHE INTERNAL "" FORCE)
-set (CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_DEBUG} -DDEBUG " CACHE INTERNAL "" FORCE)
-set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O2" CACHE INTERNAL "" FORCE)
-
-# GCC 8 requires linking stdc++fs for std::filesystem support
-if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
-    set(FS_LIBRARY stdc++fs)
+set(PHXFS_VENDOR "NVIDIA" CACHE STRING "Target GPU vendor")
+set_property(CACHE PHXFS_VENDOR PROPERTY STRINGS NVIDIA METAX AMD HUAWEI ILUVATAR)
+if(NOT PHXFS_VENDOR MATCHES "^(NVIDIA|METAX|AMD|HUAWEI|ILUVATAR)$")
+    message(FATAL_ERROR "Unsupported PHXFS_VENDOR: ${PHXFS_VENDOR}")
+endif()
+set(PHXFS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+set(PHXFS_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+set(PHXFS_EXTRA_HEADERS "${PHXFS_ROOT}/extra_headers" CACHE PATH "External kernel headers")
+set(PHXFS_MAP_MODE "staging" CACHE STRING "Default BAR mapping mode: staging or full")
+set_property(CACHE PHXFS_MAP_MODE PROPERTY STRINGS staging full)
+set(NVIDIA "" CACHE PATH "Optional NVIDIA driver header directory")
+set(KERNEL "/lib/modules/${CMAKE_SYSTEM_VERSION}/build" CACHE PATH "Kernel build tree")
+option(BUILD_SHARED_LIBS "Build a shared user library" ON)
+option(no_liburing "Disable the io_uring engine" OFF)
+option(phx_nvtx "Emit NVTX ranges from libphoenix" ON)
+include(ProcessorCount)
+ProcessorCount(cpu_count)
+if(NOT cpu_count OR cpu_count GREATER 4)
+    set(cpu_count 4)
+endif()
+set(PHXFS_BUILD_JOBS "${cpu_count}" CACHE STRING "Parallel jobs in each component build")
+set(PHXFS_GENERATOR "${CMAKE_GENERATOR}")
+find_program(PHXFS_MAKE NAMES gmake make REQUIRED)
+if(BUILD_SHARED_LIBS)
+    set(PHXFS_LIBRARY_FILE "${PHXFS_OUTPUT_DIR}/libphoenix${CMAKE_SHARED_LIBRARY_SUFFIX}")
 else()
-    set(FS_LIBRARY "")
+    set(PHXFS_LIBRARY_FILE "${PHXFS_OUTPUT_DIR}/libphoenix${CMAKE_STATIC_LIBRARY_SUFFIX}")
 endif()
 
+# Preserve explicit toolchain/SDK settings and old cache entries without
+# enabling any language or inspecting optional SDKs in this top-level project.
+set(PHXFS_FORWARDED_VARIABLES PHXFS_ROOT PHXFS_OUTPUT_DIR PHXFS_VENDOR
+    PHXFS_EXTRA_HEADERS PHXFS_MAP_MODE NVIDIA KERNEL BUILD_SHARED_LIBS no_liburing
+    phx_nvtx PHXFS_BUILD_JOBS PHXFS_GENERATOR PHXFS_MAKE PHXFS_LIBRARY_FILE
+    CMAKE_INSTALL_PREFIX)
+get_cmake_property(cache_variables CACHE_VARIABLES)
+foreach(name IN LISTS cache_variables)
+    if(name MATCHES "^CMAKE_(C|CXX|CUDA|HIP)_(COMPILER|HOST_COMPILER|ARCHITECTURES|FLAGS(_[A-Z]+)?)$"
+            OR name MATCHES "^(CMAKE_BUILD_TYPE|CMAKE_TOOLCHAIN_FILE|CMAKE_PREFIX_PATH|CUDAToolkit_ROOT|HIP_PATH|COREX_PATH|TEST_FILE|no_cc)$")
+        list(APPEND PHXFS_FORWARDED_VARIABLES "${name}")
+    endif()
+endforeach()
+if(DEFINED CUDA_TOOLKIT_ROOT_DIR AND NOT DEFINED CUDAToolkit_ROOT)
+    set(CUDAToolkit_ROOT "${CUDA_TOOLKIT_ROOT_DIR}")
+    list(APPEND PHXFS_FORWARDED_VARIABLES CUDAToolkit_ROOT)
+endif()
+set(PHXFS_SETTINGS "${PHXFS_OUTPUT_DIR}/.components/settings.cmake")
+file(MAKE_DIRECTORY "${PHXFS_OUTPUT_DIR}/.components")
+set(settings "set(PHXFS_FORWARDED_VARIABLES [==[${PHXFS_FORWARDED_VARIABLES}]==])\n")
+foreach(name IN LISTS PHXFS_FORWARDED_VARIABLES)
+    string(APPEND settings "set(${name} [==[${${name}}]==])\n")
+endforeach()
+file(WRITE "${PHXFS_SETTINGS}" "${settings}")
 
-if (no_cc)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D__NO_COHERENCE__")
-    set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -D__NO_COHERENCE__")
-    set(CCUDA_NVCC_FLAGS "${CMAKE_C_FLAGS} -D__NO_COHERENCE__")
-endif ()
+function(phxfs_target name component target)
+    add_custom_target(${name}
+        COMMAND "${CMAKE_COMMAND}" "-DPHXFS_SETTINGS=${PHXFS_SETTINGS}"
+            "-DPHXFS_COMPONENT=${component}" "-DPHXFS_TARGET=${target}"
+            -P "${PHXFS_ROOT}/cmake/BuildComponent.cmake"
+        USES_TERMINAL VERBATIM)
+endfunction()
+phxfs_target(libphoenix library libphoenix)
+add_custom_target(library DEPENDS libphoenix)
+add_custom_target(default_library ALL DEPENDS libphoenix)
+phxfs_target(modules module all)
+phxfs_target(clean_modules module clean)
+phxfs_target(install_modules module install)
+add_dependencies(install_modules modules)
+phxfs_target(with_module module install)
+add_dependencies(with_module modules)
+foreach(target insmod insmod-full insmod-staging rmmod)
+    add_custom_target(${target}
+        COMMAND "${CMAKE_COMMAND}" "-DPHXFS_SETTINGS=${PHXFS_SETTINGS}"
+            -DPHXFS_COMPONENT=module "-DPHXFS_TARGET=${target}"
+            "-DMAP_MODE=$(MAP_MODE)" "-DDEBUG_MODE=$(DEBUG_MODE)"
+            -P "${PHXFS_ROOT}/cmake/BuildComponent.cmake"
+        USES_TERMINAL VERBATIM)
+endforeach()
+foreach(target test_batch_sync test_batch_async)
+    phxfs_target(${target} cpu ${target})
+    add_dependencies(${target} libphoenix)
+endforeach()
+phxfs_target(cpu_tests cpu all)
+add_dependencies(cpu_tests libphoenix)
+phxfs_target(gpu_tests gpu all)
+add_dependencies(gpu_tests libphoenix)
+if(PHXFS_VENDOR STREQUAL "ILUVATAR")
+    set(gpu_targets test_iluvatar_roundtrip test_iluvatar_suite)
+else()
+    set(gpu_targets test_regmem test_io test_batch test_stream)
+    if(NOT PHXFS_VENDOR STREQUAL "AMD")
+        list(APPEND gpu_targets test_ioctl)
+    endif()
+endif()
+foreach(target IN LISTS gpu_targets)
+    phxfs_target(${target} gpu ${target})
+    add_dependencies(${target} libphoenix)
+endforeach()
+phxfs_target(bar_holder tools bar_holder)
+add_custom_target(tests DEPENDS cpu_tests gpu_tests)
+# Native clean must also remove objects built by the component projects.
+set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+    "${PHXFS_OUTPUT_DIR}/.components/library"
+    "${PHXFS_OUTPUT_DIR}/.components/cpu"
+    "${PHXFS_OUTPUT_DIR}/.components/gpu"
+    "${PHXFS_OUTPUT_DIR}/.components/tools"
+    "${PHXFS_OUTPUT_DIR}/libphoenix${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    "${PHXFS_OUTPUT_DIR}/libphoenix${CMAKE_STATIC_LIBRARY_SUFFIX}")
+foreach(target test_batch_sync test_batch_async bar_holder ${gpu_targets})
+    set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+        "${PHXFS_OUTPUT_DIR}/bin/${target}")
+endforeach()
+enable_testing()
+add_test(NAME batch_sync_cpu COMMAND "${PHXFS_OUTPUT_DIR}/bin/test_batch_sync")
+add_test(NAME batch_async_cpu COMMAND "${PHXFS_OUTPUT_DIR}/bin/test_batch_async")
 
-include_directories ("${PROJECT_SOURCE_DIR}/libphoenix/include")
-
-if (PHXFS_VENDOR STREQUAL "NVIDIA")
-    include_directories ("${CUDA_TOOLKIT_ROOT_DIR}/targets/x86_64-linux/include/")
-endif ()
-
-# Set vendor-specific backend object file and compile define
-set (VENDOR_KERNEL_MODULE "")
-if (PHXFS_VENDOR STREQUAL "NVIDIA")
-    set (VENDOR_BACKEND "nvidia-backend.o")
-    set (VENDOR_DEFINE "CONFIG_PHXFS_VENDOR_NVIDIA")
-elseif (PHXFS_VENDOR STREQUAL "METAX")
-    set (VENDOR_BACKEND "metax-backend.o")
-    set (VENDOR_DEFINE "CONFIG_PHXFS_VENDOR_METAX")
-    set (VENDOR_KERNEL_MODULE "/opt/mxdriver/kernel_module/${CMAKE_SYSTEM_VERSION}/Module.symvers")
-elseif (PHXFS_VENDOR STREQUAL "AMD")
-    set (VENDOR_BACKEND "amd-backend.o")
-    set (VENDOR_DEFINE "CONFIG_PHXFS_VENDOR_AMD")
-elseif (PHXFS_VENDOR STREQUAL "HUAWEI")
-    set (VENDOR_BACKEND "huawei-backend.o")
-    set (VENDOR_DEFINE "CONFIG_PHXFS_VENDOR_HUAWEI")
-elseif (PHXFS_VENDOR STREQUAL "ILUVATAR")
-    set (VENDOR_BACKEND "iluvatar-backend.o")
-    set (VENDOR_DEFINE "CONFIG_PHXFS_VENDOR_ILUVATAR")
-else ()
-    message (FATAL_ERROR "Unsupported PHXFS_VENDOR: ${PHXFS_VENDOR}. Use NVIDIA, METAX, AMD, HUAWEI, or ILUVATAR.")
-endif ()
-
-# Try to find Nvidia driver headers (only needed for NVIDIA backend)
-set (driver_include "")
-if (PHXFS_VENDOR STREQUAL "NVIDIA")
-    # Directly glob for nv-p2p.h in common locations
-    file (GLOB nv_p2p_files
-        "/usr/src/nvidia-*/nvidia-peermem/nv-p2p.h"
-        "/usr/src/nvidia-*/nv-p2p.h"
-        "${NVIDIA}/nv-p2p.h"
-        "${NVIDIA}/nvidia-peermem/nv-p2p.h")
-
-    if (nv_p2p_files)
-        list (REVERSE nv_p2p_files)
-        list (GET nv_p2p_files 0 first_match)
-        get_filename_component (driver_include "${first_match}" DIRECTORY)
-    endif ()
-
-    if (driver_include)
-        message(STATUS "Found NVIDIA driver header: ${driver_include}/nv-p2p.h")
-    else ()
-        message(WARNING
-            "nv-p2p.h not found! Searched:\n"
-            "  - /usr/src/nvidia-*/nvidia-peermem/nv-p2p.h\n"
-            "  - /usr/src/nvidia-*/nv-p2p.h\n"
-            "  - NVIDIA cache var: '${NVIDIA}'\n"
-            "Pass -DNVIDIA=/path/to/nvidia/driver/src to cmake.")
-    endif ()
-endif ()
-
-# # Module source files
-set (module_root "${PROJECT_SOURCE_DIR}/module")
-set (module_output "${CMAKE_BINARY_DIR}/module")
-# for Makefile.in, do not delete
-if (driver_include)
-	set (module_ccflags "-I${driver_include} -D${VENDOR_DEFINE}")
-else ()
-	set (module_ccflags "-D${VENDOR_DEFINE}")
-endif ()
-# Bake the default BAR mapping mode into phoenixfs.ko.
-if (PHXFS_MAP_MODE STREQUAL "full")
-	set (PHXFS_MAP_MODE_DEFAULT 0)
-else ()
-	set (PHXFS_MAP_MODE_DEFAULT 1)
-endif ()
-set (module_ccflags "${module_ccflags} -DPHXFS_MAP_MODE_DEFAULT=${PHXFS_MAP_MODE_DEFAULT}")
-configure_file ("${module_root}/Makefile.in" "${module_output}/Makefile" @ONLY)
-message (STATUS "Configuring module build in ${module_output}")
-
-add_custom_target(
-    modules
-    COMMAND make
-    WORKING_DIRECTORY ${module_output}
-    COMMENT "Building kernel module"
-)
-
-add_custom_target(
-    clean_modules
-    COMMAND make clean
-    WORKING_DIRECTORY ${module_output}
-    COMMENT "Cleaning kernel module"
-)
-
-add_custom_target(
-    insmod
-    # Optional override: `make insmod MAP_MODE=0|1` forces the BAR map mode for
-    # this load, overriding the mode baked in at cmake time (PHXFS_MAP_MODE).
-    # Variables are passed explicitly: sudo may reset the environment, which
-    # would drop make's implicit MAKEFLAGS propagation.
-    COMMAND sudo make insmod MAP_MODE=$(MAP_MODE) DEBUG_MODE=$(DEBUG_MODE)
-    WORKING_DIRECTORY ${module_output}
-    COMMENT "Inserting kernel module"
-)
-# Named variants so the mode is TAB-completable at the top level too.
-add_custom_target(
-    insmod-staging
-    COMMAND sudo make insmod-staging MAP_MODE=$(MAP_MODE) DEBUG_MODE=$(DEBUG_MODE)
-    WORKING_DIRECTORY ${module_output}
-    COMMENT "Inserting kernel module (STAGING mode)"
-)
-add_custom_target(
-    insmod-full
-    COMMAND sudo make insmod-full MAP_MODE=$(MAP_MODE) DEBUG_MODE=$(DEBUG_MODE)
-    WORKING_DIRECTORY ${module_output}
-    COMMENT "Inserting kernel module (FULL mode)"
-)
-
-add_custom_target(
-    rmmod
-    COMMAND sudo make rmmod
-    WORKING_DIRECTORY ${module_output}
-    COMMENT "Removing kernel module"
-)
-
-
-# Library source files
-set(libphoenix_root "${PROJECT_SOURCE_DIR}/libphoenix")
-file(GLOB libphoenix_source "${libphoenix_root}/*.cpp" "${libphoenix_root}/io_engine/*.cpp")
-file(GLOB libphoenix_include "${libphoenix_root}/include/*.h")
-
-# io_engine_uring.cpp requires liburing; drop it when unavailable so the
-# sync fallback engine is still built.
-if (NOT LIBURING_FOUND)
-    list(REMOVE_ITEM libphoenix_source "${libphoenix_root}/io_engine/io_engine_uring.cpp")
-endif ()
-
-# Select vendor-specific connector source file
-if (PHXFS_VENDOR STREQUAL "NVIDIA" OR PHXFS_VENDOR STREQUAL "METAX" OR PHXFS_VENDOR STREQUAL "ILUVATAR")
-    set(devconn_source "${libphoenix_root}/connectors/nvidia_connector.cpp")
-    if (PHXFS_VENDOR STREQUAL "ILUVATAR")
-        list(APPEND devconn_source "${libphoenix_root}/connectors/iluvatar_cuda_rt.cpp")
-    endif ()
-elseif (PHXFS_VENDOR STREQUAL "AMD")
-    set(devconn_source "${libphoenix_root}/connectors/amd_connector.cpp")
-elseif (PHXFS_VENDOR STREQUAL "HUAWEI")
-    set(devconn_source "${libphoenix_root}/connectors/huawei_connector.cc")
-endif ()
-
-add_library(libphoenix ${libphoenix_source} ${devconn_source} ${libphoenix_include})
-set_target_properties (libphoenix PROPERTIES OUTPUT_NAME "phoenix")
-target_include_directories(libphoenix PRIVATE "${libphoenix_root}")
-
-# The library itself depends on cudart (nvidia_connector) and pthreads (io
-# pool); declare them as link deps so libphoenix.so carries the right
-# DT_NEEDED and can be dlopen()'d standalone (P1-2), not left to consumers.
-target_link_libraries(libphoenix Threads::Threads ${CMAKE_DL_LIBS})
-if (PHXFS_VENDOR STREQUAL "NVIDIA")
-    target_link_libraries(libphoenix CUDA::cudart)
-    # NVTX ranges (phx.batch.*, phx.staging.*) for nsys. NVTX v3 is
-    # header-only, so this adds no link dependency; disable with
-    # cmake -Dphx_nvtx=false.
-    if (phx_nvtx)
-        target_compile_definitions(libphoenix PRIVATE PHX_NVTX=1)
-    endif ()
-elseif (PHXFS_VENDOR STREQUAL "ILUVATAR")
-    # Headers only. libcudart is dlopened next to the libcuda that matches
-    # /sys/module/iluvatar/version; do not DT_NEEDED a CoreX libcudart.
-    set (COREX_PATH "/usr/local/corex" CACHE PATH "CoreX SDK prefix")
-    target_include_directories(libphoenix BEFORE PRIVATE "${COREX_PATH}/include")
-    target_compile_definitions(libphoenix PRIVATE PHXFS_ILUVATAR=1)
-elseif (PHXFS_VENDOR STREQUAL "AMD")
-    # HIP runtime: the connector only uses the plain C HIP API, so it is
-    # compiled by the regular CXX compiler — no hipcc needed for the
-    # library itself (only the tests need hipcc for their .hip sources).
-    set (HIP_PATH "/opt/rocm" CACHE PATH "ROCm installation prefix")
-    target_include_directories (libphoenix PRIVATE "${HIP_PATH}/include")
-    target_link_directories (libphoenix PRIVATE "${HIP_PATH}/lib")
-    target_link_libraries (libphoenix amdhip64)
-endif ()
-
-# Link liburing for the io_uring batch engine when available.
-if (LIBURING_FOUND)
-    target_include_directories(libphoenix PRIVATE ${LIBURING_INCLUDE_DIRS})
-    target_link_directories(libphoenix PRIVATE ${LIBURING_LIBRARY_DIRS})
-    target_link_libraries(libphoenix ${LIBURING_LIBRARIES})
-endif ()
-# Default installation includes only the user library and headers.
-install (FILES ${libphoenix_include} DESTINATION "include")
-install (TARGETS libphoenix DESTINATION "lib")
-add_custom_target(
-    with_module
-    COMMAND make install
-    WORKING_DIRECTORY "${module_output}"
-    DEPENDS modules
-    COMMENT "Installing the explicitly requested kernel module"
-    VERBATIM
-)
-
-
-# Make target depend on pthreads
-macro (set_multithread target)
-    target_link_libraries (${target} Threads::Threads)
-endmacro ()
-
-# Output directories (shared by libphoenix and the test targets)
-set (CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
-set (CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-set (CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
-
-# Tests require a GPU language (CUDA on NVIDIA/METAX via cu-bridge, HIP on
-# AMD from the hipify-perl-converted test/*.hip sources); Iluvatar is plain C++.
-enable_testing ()
-if (PHXFS_VENDOR STREQUAL "NVIDIA" OR PHXFS_VENDOR STREQUAL "METAX"
-        OR PHXFS_VENDOR STREQUAL "AMD" OR PHXFS_VENDOR STREQUAL "ILUVATAR")
-    add_subdirectory ("${PROJECT_SOURCE_DIR}/test/")
-endif ()
+# make install builds the default library, then installs its headers/library.
+install(CODE "set(PHXFS_SETTINGS \"${PHXFS_SETTINGS}\")\nset(PHXFS_COMPONENT library)\nset(PHXFS_TARGET install)\ninclude(\"${PHXFS_ROOT}/cmake/BuildComponent.cmake\")")
+message(STATUS "Targets: modules, libphoenix, cpu_tests, gpu_tests, tests, install_modules")
+message(STATUS "Dependencies are checked when the selected target is built; make builds the user library")

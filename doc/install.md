@@ -9,7 +9,8 @@
   [Supported accelerators](#supported-accelerators) below). Phoenix does **not** require any
   vendor-specific direct-storage plugin (e.g. NVIDIA `nvidia-fs` / GPUDirect Storage), a specific
   filesystem, or any RDMA stack.
-- **Build tools**: CMake ≥ 3.18, the compiler toolchain for your chosen vendor, `liburing`
+- **Build tools**: CMake ≥ 3.18 and Make. Compiler and SDK requirements depend on
+  the target selected below; `liburing` is optional and enables the io_uring engine.
 
 ### Kernel boot parameters
 
@@ -42,6 +43,7 @@ table (`phxfs_p2p` in the kernel, `devconn` in the user library).
 | --- | --- | --- | --- |
 | NVIDIA | `NVIDIA` (default) | CUDA Toolkit 12.4+ + NVIDIA driver | ✅ Shipped |
 | MetaX (沐曦) | `METAX` | MACA SDK (CUDA-compatible) | ✅ Shipped (reuses the CUDA connector) |
+| Iluvatar (天数智芯) | `ILUVATAR` | Iluvatar driver and CoreX SDK headers | ✅ Shipped (runtime selected to match the loaded driver) |
 
  AMD/Huawei NPU/Moore Threads (摩尔线程) is comming soon.
 
@@ -90,23 +92,67 @@ NVMe-oF/RDMA-backed parallel filesystem is comming soon.
 
 ```shell
 mkdir -p build && cd build
-cmake -DPHXFS_VENDOR=<vendor> ../      # see the options below; default is NVIDIA
-make -j
+cmake ..                  # default vendor: NVIDIA; SDKs are checked at make time
+make libphoenix           # build only the user library (also the default make target)
+make modules              # build only the kernel module
+make test_regmem           # build one GPU test and its library dependency
 ```
-This compiles the user library and tests. The kernel module is built only when
-explicitly requested with `make modules` or `make install with_module`.
+Use the same build directory for all targets. `cmake ..` generates the public
+targets without enabling C/C++/CUDA or looking for kernel/SDK headers. Each
+selected target configures its own component under `.components/` before
+building. `make help` lists the targets; shell Make completion can list them too.
+
+| Target | What it builds | NVIDIA dependencies checked when invoked |
+| --- | --- | --- |
+| `modules` | `module/phoenixfs.ko` | Kernel build tree, Kbuild's C compiler, driver P2P header; no CUDA Toolkit or liburing |
+| `libphoenix` / `library` / default `make` | `libphoenix.so` | C++20 compiler, CUDA 12.4+ headers and cudart; no nvcc |
+| `test_batch_sync`, `test_batch_async` / `cpu_tests` | One / both CPU test programs and the library | Library dependencies; no nvcc |
+| `test_regmem`, `test_io`, `test_batch`, `test_stream`, `test_ioctl` / `gpu_tests` | One / all GPU test programs and the library | Library dependencies plus nvcc |
+| `tests` | All CPU and GPU test programs and the library | Same as `gpu_tests` |
+| `bar_holder` | `bin/bar_holder` diagnostic tool | C compiler |
+
+Test binaries are written to `bin/`. Building tests does not run them; after
+`make cpu_tests`, `ctest --output-on-failure` runs the two CPU tests. GPU tests
+need the appropriate driver, devices, and storage setup before execution.
+
+The library sources are C++ and call CUDA runtime APIs. A CUDA development
+installation containing `include/`, `lib64/`, and a Toolkit version file can be
+used without nvcc; a driver alone does not supply these development files. Set
+`-DCUDAToolkit_ROOT=/path/to/cuda` only if automatic SDK discovery needs help.
+
+#### Bundled NVIDIA P2P headers
+
+Phoenix includes official, unmodified `nv-p2p.h` files in
+[`extra_headers/`](../extra_headers/README.md), with the NVIDIA license, source
+tag, and checksum preserved. Module configuration reads the loaded NVIDIA
+**driver version**, selects an exact bundled/local header when available, then
+falls back to the bundled sample for that driver branch. The CUDA Toolkit
+version does not select this kernel header.
+
+For an unbundled driver, place its official header at
+`extra_headers/nvidia-<driver-version>/nv-p2p.h`. An explicit
+`cmake -DNVIDIA=/path/to/driver/headers ..` overrides header selection; an
+alternative collection can be set with `-DPHXFS_EXTRA_HEADERS=/path/to/headers`.
+Only `make modules` requires this header. Phoenix checks the driver-returned
+page-table ABI and page size before reading its pages; incompatible tables are
+rejected. Sampled header changes and the limits of this check are documented in
+the header collection README.
 
 Vendor selection (`-DPHXFS_VENDOR=<value>`):
 
 ```shell
 cmake -DPHXFS_VENDOR=NVIDIA ../       # default; CUDA Toolkit 12.4+ + NVIDIA driver
 cmake -DPHXFS_VENDOR=METAX ../        # MetaX MACA (CUDA-compatible, reuses NVIDIA connector)
+cmake -DPHXFS_VENDOR=ILUVATAR ../     # Iluvatar CoreX; override COREX_PATH if needed
 cmake -DPHXFS_VENDOR=AMD ../          # requires module/amd-backend.c + libphoenix/connectors/amd_connector.cpp
-cmake -DPHXFS_VENDOR=MTHREADS ../     # requires module/mthreads-backend.c + libphoenix/connectors/mthreads_connector.cpp
 cmake -DPHXFS_VENDOR=HUAWEI ../        # requires module/huawei-backend.c + libphoenix/connectors/huawei_connector.cpp
 ```
 
 Other build options:
+
+Iluvatar GPU tests use plain C++: `make test_iluvatar_roundtrip` or
+`make test_iluvatar_suite`, with `make gpu_tests` building both. They require
+CoreX headers and the library, without enabling CUDA or invoking nvcc.
 
 - Switch the default BAR mapping mode: `cmake -DPHXFS_MAP_MODE=full ../` (default `staging`; see [below](#bar-mapping-mode-staging-default-vs-full)).
 
@@ -119,7 +165,7 @@ cd build
 sudo make install
 ```
 
-This builds user space and installs only `libphoenix` into `<prefix>/lib` and
+This builds the user library and installs `libphoenix` into `<prefix>/lib` and
 headers into `<prefix>/include` (default prefix `/usr/local`). It never builds,
 installs, or loads the kernel module, runs `depmod`, or refreshes the PAT snapshot.
 No module-related configuration option is needed, including inside containers.
