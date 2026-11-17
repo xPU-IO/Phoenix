@@ -159,14 +159,21 @@ int phxfs_write_batch(phxfs_io_req_t *reqs, int n);
  *   valid until phxfs_batch_wait()/phxfs_batch_destroy() returns, and its
  *   fields MUST NOT be modified after submit.
  *   Each handle must be consumed by exactly one call to phxfs_batch_wait()
- *   or phxfs_batch_destroy(); after that call the handle is freed and must
- *   not be used again.
+ *   or phxfs_batch_destroy(); after that call the handle is freed regardless
+ *   of its return value. Clear the caller's handle variable; never call
+ *   destroy after wait, or pass a consumed handle to any batch API.
+ *   Serialize cancel/wait/destroy on the same handle, including while wait
+ *   blocks. Separate handles may be used concurrently with independent reqs
+ *   and buffers. Invalid/stale non-NULL pointers are not checked and using
+ *   them, or consuming the same handle concurrently, is undefined behavior.
  *
  * phxfs_batch_submit_read/write return an opaque handle, or NULL on error
  * (ENOMEM on allocation failure, ENOTSUP if the worker pool is unavailable,
- * ESHUTDOWN if the library is being unloaded).
+ * ESHUTDOWN if the library is being unloaded). On NULL, internal resources
+ * have been released; no handle needs to be waited or destroyed.
  * phxfs_batch_wait returns the number of failed requests (>=0), or negative
- * on error, copies per-request results back, and frees the handle.
+ * on error, copies per-request results back, and frees the handle. For a
+ * valid handle, it always waits for all work to quiesce, even on I/O errors.
  * phxfs_batch_cancel makes a best-effort attempt to cancel pending work.
  * Work already claimed by a worker may still complete; completed results and
  * writes are not undone. Returns 0 on success (including repeated cancellation
@@ -175,8 +182,7 @@ int phxfs_write_batch(phxfs_io_req_t *reqs, int n);
  * any request resources. wait reports canceled requests as -ECANCELED, or
  * preserves positive byte counts for requests that made partial progress;
  * canceled/short requests count as failures. STAGING batches canceled before
- * wait do not start their deferred transfer. Serialize cancel/wait/destroy
- * calls on the same handle; never use a handle after wait/destroy.
+ * wait do not start their deferred transfer.
  * phxfs_batch_destroy abandons a batch: it waits for outstanding work to
  * quiesce, then frees the handle WITHOUT copying results back. It does not
  * request cancellation; call cancel first to discard pending work as well.

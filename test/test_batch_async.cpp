@@ -13,6 +13,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -180,6 +181,100 @@ void test_cancel(int fd) {
     for (int i = 0; i < n; i++)
         correct = correct && ops[i].result == (i < n - expected ? 1 : -ECANCELED);
     CHECK(correct, "claimed ops complete; unclaimed ops are canceled");
+}
+
+void test_handle_lifecycle(int fd) {
+    uint8_t buffer[32]{};
+    struct LifecycleCase {
+        const char *name;
+        int fd;
+        off_t buf_offset;
+        size_t nbytes;
+        off_t f_offset;
+        ssize_t result;
+    };
+    const LifecycleCase cases[] = {
+        {"success", fd, 0, sizeof(buffer), 0, sizeof(buffer)},
+        {"bad fd", -1, 0, sizeof(buffer), 0, -EBADF},
+        {"unresolved buffer", fd, -1, sizeof(buffer), 0, -EFAULT},
+        {"short read", fd, 0, sizeof(buffer), lseek(fd, 0, SEEK_END) - 8, 8},
+        {"zero length", fd, 0, 0, 0, 0},
+    };
+    for (const auto &entry : cases) {
+        phxfs_io_req_t req{};
+        req.fd = entry.fd;
+        req.device_id = -1;
+        req.buf = buffer;
+        req.buf_offset = entry.buf_offset;
+        req.nbytes = entry.nbytes;
+        req.f_offset = entry.f_offset;
+        bool waited = true, destroyed = true;
+        for (int r = 0; r < 256 && waited && destroyed; r++) {
+            req.result = -1;
+            phxfs_batch_t *h = phxfs_batch_submit_read(&req, 1);
+            if (!h) {
+                waited = false;
+                break;
+            }
+            int rc = phxfs_batch_wait(h);
+            h = nullptr;
+            int expected = entry.result == (ssize_t)entry.nbytes ? 0 : 1;
+            waited = rc == expected && req.result == entry.result;
+
+            req.result = -1;
+            h = phxfs_batch_submit_read(&req, 1);
+            if (!h) {
+                destroyed = false;
+                break;
+            }
+            rc = phxfs_batch_destroy(h);
+            h = nullptr;
+            ssize_t expected_result = entry.result == -EFAULT ? -EFAULT : -1;
+            destroyed = rc == 0 && req.result == expected_result;
+        }
+        CHECK(waited, "repeated submit/wait lifecycle: %s", entry.name);
+        CHECK(destroyed, "repeated submit/destroy without copy-back: %s", entry.name);
+    }
+    phxfs_batch_t *h = phxfs_batch_submit_write(nullptr, 0);
+    CHECK(h != nullptr, "empty batch for destroy returns a handle");
+    if (h) {
+        int rc = phxfs_batch_destroy(h);
+        h = nullptr;
+        CHECK(rc == 0, "empty batch destroy releases the handle");
+    }
+}
+
+void test_independent_handles(int fd) {
+    constexpr int nthreads = 4;
+    bool completed[nthreads]{};
+    std::thread workers[nthreads];
+    for (int i = 0; i < nthreads; i++) {
+        workers[i] = std::thread([&, i] {
+            uint8_t buffer[32]{};
+            phxfs_io_req_t req{};
+            req.fd = fd;
+            req.device_id = -1;
+            req.buf = buffer;
+            req.nbytes = sizeof(buffer);
+            for (int r = 0; r < 256; r++) {
+                req.result = -1;
+                phxfs_batch_t *h = phxfs_batch_submit_read(&req, 1);
+                if (!h)
+                    return;
+                int rc = phxfs_batch_wait(h);
+                h = nullptr;
+                if (rc != 0 || req.result != (ssize_t)sizeof(buffer))
+                    return;
+            }
+            completed[i] = true;
+        });
+    }
+    for (auto &worker : workers)
+        worker.join();
+    bool ok = true;
+    for (bool done : completed)
+        ok = ok && done;
+    CHECK(ok, "independent handles complete concurrently with separate request storage");
 }
 
 }  // namespace
@@ -405,6 +500,8 @@ int main() {
           "destroyed write batch still landed on disk");
 
     test_cancel(fd);
+    test_handle_lifecycle(fd);
+    test_independent_handles(fd);
     close(fd);
     std::printf("=== %d checks, %d failed ===\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;

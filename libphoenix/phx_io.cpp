@@ -757,13 +757,26 @@ struct phxfs_batch {
     struct phxfs_pool_async *pool_h;   /* internal pool handle (may be NULL) */
     struct batch_ctx         bc;       /* resolved ops + held device/mapping refs */
     phxfs_io_req_t          *reqs;     /* user array, for result copy-back */
-    bool                     joined;   /* wait()/destroy() already consumed this handle */
     bool                     staging;  /* staging-mode batch: run at wait() time */
     bool                     canceled;
     int                      staging_n;
     int                      staging_is_write;
     host_batch_ctx          *host_bc;
 };
+
+/* Release only before successful enqueue or after outstanding work quiesces.
+ * Preserve submission errno across device/mapping cleanup. */
+static void batch_handle_free(phxfs_batch_t *h) {
+    int saved_errno = errno;
+    if (h->host_bc) {
+        delete h->host_bc;
+    } else {
+        batch_ctx_release(&h->bc);
+        batch_ctx_free(&h->bc);
+    }
+    free(h);
+    errno = saved_errno;
+}
 
 static phxfs_batch_t *phxfs_batch_submit(phxfs_io_req_t *reqs, int n,
                                          enum phxfs_io_op op) {
@@ -773,7 +786,6 @@ static phxfs_batch_t *phxfs_batch_submit(phxfs_io_req_t *reqs, int n,
     if (!h)
         return NULL;
     h->reqs = reqs;
-    h->joined = false;
 
     if (n <= 0)
         return h;   /* empty batch: wait() returns 0, matching sync semantics */
@@ -790,14 +802,12 @@ static phxfs_batch_t *phxfs_batch_submit(phxfs_io_req_t *reqs, int n,
     if (batch_uses_host(reqs, n)) {
         h->host_bc = new (std::nothrow) host_batch_ctx();
         if (!h->host_bc) {
-            free(h);
+            batch_handle_free(h);
             errno = ENOMEM;
             return NULL;
         }
         if (host_batch_prepare(reqs, n, h->host_bc) < 0) {
-            host_batch_release(h->host_bc);
-            delete h->host_bc;
-            free(h);
+            batch_handle_free(h);
             return NULL;
         }
         if (!h->host_bc->ops.empty()) {
@@ -805,16 +815,15 @@ static phxfs_batch_t *phxfs_batch_submit(phxfs_io_req_t *reqs, int n,
                                           (int)h->host_bc->ops.size(),
                                           op, /*blocking=*/true);
             if (!h->pool_h) {
-                host_batch_release(h->host_bc);
-                delete h->host_bc;
-                free(h);
+                batch_handle_free(h);
                 return NULL;
             }
         }
         return h;
     }
     if (phxfs_batch_prepare(reqs, n, &h->bc) < 0) {
-        free(h);
+        batch_handle_free(h);
+        errno = ENOMEM;
         return NULL;
     }
 
@@ -825,9 +834,7 @@ static phxfs_batch_t *phxfs_batch_submit(phxfs_io_req_t *reqs, int n,
          * concurrently. NULL means OOM / pool shutdown — release and fail. */
         h->pool_h = phxfs_pool_submit(h->bc.ops, h->bc.cnt, op, /*blocking=*/true);
         if (!h->pool_h) {
-            batch_ctx_release(&h->bc);
-            batch_ctx_free(&h->bc);
-            free(h);
+            batch_handle_free(h);
             return NULL;
         }
     }
@@ -843,7 +850,7 @@ phxfs_batch_t *phxfs_batch_submit_write(phxfs_io_req_t *reqs, int n) {
 }
 
 int phxfs_batch_cancel(phxfs_batch_t *h) {
-    if (!h || h->joined)
+    if (!h)
         return -EINVAL;
     PHX_RANGE("phx.batch.cancel");
     h->canceled = true;
@@ -853,87 +860,48 @@ int phxfs_batch_cancel(phxfs_batch_t *h) {
 int phxfs_batch_wait(phxfs_batch_t *h) {
     if (!h)
         return -EINVAL;
-    if (h->joined) {
-        fprintf(stderr, "%s: handle already waited/destroyed\n", __func__);
-        return -EINVAL;
-    }
-    h->joined = true;
 
     PHX_RANGE("phx.batch.wait");
 
+    int ret = 0;
     if (h->staging) {
-        int fails;
         if (h->canceled) {
             for (int i = 0; i < h->staging_n; i++)
                 h->reqs[i].result = -ECANCELED;
-            fails = h->staging_n;
+            ret = h->staging_n;
         } else {
-            fails = phx_staging_batch(h->reqs, h->staging_n, h->staging_is_write);
+            ret = phx_staging_batch(h->reqs, h->staging_n, h->staging_is_write);
         }
-        free(h);
-        return fails;
-    }
-    if (h->host_bc) {
-        int ret = h->pool_h ? phxfs_pool_wait(h->pool_h) : 0;
-        int failures = host_batch_finalize(h->host_bc);
-        host_batch_release(h->host_bc);
-        delete h->host_bc;
-        free(h);
-        return ret < 0 ? ret : failures;
+    } else {
+        if (h->pool_h) {
+            phx_range_push("phx.io.pool_wait");
+            ret = phxfs_pool_wait(h->pool_h);
+            phx_range_pop();
+        }
+        if (h->host_bc) {
+            int failures = host_batch_finalize(h->host_bc);
+            if (ret >= 0)
+                ret = failures;
+        } else {
+            for (int k = 0; k < h->bc.cnt; k++)
+                h->reqs[h->bc.map[k]].result = h->bc.ops[k].result;
+            if (ret >= 0)
+                ret += h->bc.resolve_fail;
+        }
     }
 
-    int ret = 0;
-    if (h->pool_h) {
-        phx_range_push("phx.io.pool_wait");
-        ret = phxfs_pool_wait(h->pool_h);
-        phx_range_pop();
-    }
-
-    for (int k = 0; k < h->bc.cnt; k++)
-        h->reqs[h->bc.map[k]].result = h->bc.ops[k].result;
-
-    int resolve_fail = h->bc.resolve_fail;
-    batch_ctx_release(&h->bc);
-    batch_ctx_free(&h->bc);
-    int rc = (ret < 0) ? ret : ret + resolve_fail;
-    free(h);
-    return rc;
+    batch_handle_free(h);
+    return ret;
 }
 
-/*
- * Abandon an async batch: wait for outstanding work to quiesce without
- * requesting cancellation, then release the held device/mapping refs and free
- * the handle WITHOUT copying results back. Gives a caller that drops a batch
- * a defined way to release the pool and all references instead of leaking
- * them until process exit. Returns 0, or -EINVAL for NULL/already-joined.
- */
+/* Consume without copying results or requesting cancellation.
+ * Deferred STAGING work is never started here. */
 int phxfs_batch_destroy(phxfs_batch_t *h) {
     if (!h)
         return -EINVAL;
-    if (h->joined) {
-        fprintf(stderr, "%s: handle already waited/destroyed\n", __func__);
-        return -EINVAL;
-    }
-    h->joined = true;
-
-    if (h->staging) {
-        /* Nothing was submitted at submit() time; just drop the handle. */
-        free(h);
-        return 0;
-    }
-    if (h->host_bc) {
-        if (h->pool_h)
-            (void)phxfs_pool_wait(h->pool_h);
-        host_batch_release(h->host_bc);
-        delete h->host_bc;
-        free(h);
-        return 0;
-    }
 
     if (h->pool_h)
         (void)phxfs_pool_wait(h->pool_h);
-    batch_ctx_release(&h->bc);
-    batch_ctx_free(&h->bc);
-    free(h);
+    batch_handle_free(h);
     return 0;
 }
