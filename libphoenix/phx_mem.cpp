@@ -621,32 +621,30 @@ void batch_resolve_registered(const phxfs_io_req_t *reqs, int n,
  * Release the mapping references taken by batch_resolve_registered(), taking
  * each device's lock once per device instead of once per mapping. devs[i] is
  * the device nodes[i] was resolved on; NULL nodes are skipped. Broadcasts
- * drain_cv once per device when any of its mappings' refcounts reached zero.
+ * that device's drain_cv at each mapping's zero-refcount transition.
  */
 void batch_release_mappings(const int *devs, phxfs_p2p_map_t *const *nodes,
                             int n) {
     int held = -1;
-    bool zero = false;
     for (int i = 0; i < n; i++) {
         if (!nodes[i])
             continue;
         int d = devs[i];
         if (d != held) {
             if (held >= 0) {
-                if (zero)
-                    pthread_cond_broadcast(&mbuffer[held].drain_cv);
                 pthread_mutex_unlock(&mbuffer[held].lock);
-                zero = false;
             }
             pthread_mutex_lock(&mbuffer[d].lock);
             held = d;
         }
+        /* Notify while holding the same device lock used by deregmem().
+         * Broadcasting at the exact zero transition keeps this path aligned
+         * with map_release() and avoids deferring notification until a later
+         * device switch or the end of the batch. */
         if (--nodes[i]->refcount == 0)
-            zero = true;
+            pthread_cond_broadcast(&mbuffer[d].drain_cv);
     }
     if (held >= 0) {
-        if (zero)
-            pthread_cond_broadcast(&mbuffer[held].drain_cv);
         pthread_mutex_unlock(&mbuffer[held].lock);
     }
 }
