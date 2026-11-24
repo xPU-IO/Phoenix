@@ -124,14 +124,14 @@ typedef struct phxfs_io_req {
  *
  * Lifetime contract (applies to both sync and async batches): every
  * resource each request references must stay valid until the call (sync)
- * or phxfs_batch_wait() (async) returns:
+ * or phxfs_batch_wait()/phxfs_batch_wait_all() (async) returns:
  *   - reqs[i].fd must remain open (fds are NOT dup'd internally; if you
  *     close and the number is reused, I/O may hit the wrong file);
  *   - the CPU buffer (for host-buffer requests) must not be freed;
  *   - for registered GPU buffers, the phxfs_regmem registration is held by
  *     an internal reference for the batch's duration — a concurrent
  *     phxfs_deregmem() on it blocks until those references are released.
- *     Async references are released by wait/destroy, even if the worker has
+ *     Async references are released by wait/wait_all/destroy, even if the worker has
  *     finished. Consume the handle first on the same thread, or from another
  *     thread while deregistration waits. Serialize regmem/deregmem calls for
  *     the same region, including while final deregistration is waiting.
@@ -193,6 +193,10 @@ phxfs_batch_t *phxfs_batch_submit_read(phxfs_io_req_t *reqs, int n);
 phxfs_batch_t *phxfs_batch_submit_write(phxfs_io_req_t *reqs, int n);
 int phxfs_batch_cancel(phxfs_batch_t *handle);
 int phxfs_batch_wait(phxfs_batch_t *handle);
+/* Wait for and consume every non-NULL handle in `handles[0..n)`. Each
+ * consumed entry is set to NULL. Returns the accumulated failed-request count,
+ * or the first negative error after all handles have been consumed. */
+int phxfs_batch_wait_all(phxfs_batch_t **handles, int n);
 int phxfs_batch_destroy(phxfs_batch_t *handle);
 
 /*

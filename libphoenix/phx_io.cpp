@@ -894,6 +894,32 @@ int phxfs_batch_wait(phxfs_batch_t *h) {
     return ret;
 }
 
+int phxfs_batch_wait_all(phxfs_batch_t **handles, int n) {
+    if (n < 0 || (n > 0 && !handles))
+        return -EINVAL;
+
+    int failures = 0;
+    int first_error = 0;
+    for (int i = 0; i < n; i++) {
+        phxfs_batch_t *h = handles[i];
+        if (!h)
+            continue;
+
+        /* phxfs_batch_wait() consumes the handle even on an I/O error. Clear
+         * the caller's slot before waiting so a completed entry cannot be
+         * accidentally reused if the call blocks or returns an error. */
+        handles[i] = NULL;
+        int rc = phxfs_batch_wait(h);
+        if (rc < 0) {
+            if (first_error == 0)
+                first_error = rc;
+        } else {
+            failures += rc;
+        }
+    }
+    return first_error ? first_error : failures;
+}
+
 /* Consume without copying results or requesting cancellation.
  * Deferred STAGING work is never started here. */
 int phxfs_batch_destroy(phxfs_batch_t *h) {

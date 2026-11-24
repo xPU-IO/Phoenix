@@ -299,6 +299,15 @@ int main() {
     /* Bad-handle plumbing. */
     CHECK(phxfs_batch_cancel(nullptr) == -EINVAL, "cancel on NULL handle");
     CHECK(phxfs_batch_wait(nullptr) == -EINVAL, "wait on NULL handle");
+    CHECK(phxfs_batch_wait_all(nullptr, 0) == 0,
+          "wait_all accepts an empty handle list");
+    CHECK(phxfs_batch_wait_all(nullptr, -1) == -EINVAL,
+          "wait_all rejects a negative handle count");
+    CHECK(phxfs_batch_wait_all(nullptr, 1) == -EINVAL,
+          "wait_all rejects a missing handle list");
+    phxfs_batch_t *empty_slots[] = {nullptr, nullptr};
+    CHECK(phxfs_batch_wait_all(empty_slots, 2) == 0,
+          "wait_all skips NULL handle slots");
     CHECK(phxfs_batch_destroy(nullptr) == -EINVAL, "destroy on NULL handle");
 
     int fd = make_temp_file();
@@ -394,8 +403,11 @@ int main() {
     phxfs_batch_t *hw = phxfs_batch_submit_write(&pipe_write, 1);
     phxfs_batch_t *hr = phxfs_batch_submit_read(&pipe_read, 1);
     CHECK(hw != nullptr && hr != nullptr, "pipelined submits queue");
-    CHECK(hw && phxfs_batch_wait(hw) == 0, "pipelined write wait");
-    CHECK(hr && phxfs_batch_wait(hr) == 0, "pipelined read wait");
+    phxfs_batch_t *pipelined[] = {hw, hr};
+    CHECK(phxfs_batch_wait_all(pipelined, 2) == 0,
+          "pipelined wait_all");
+    CHECK(pipelined[0] == nullptr && pipelined[1] == nullptr,
+          "wait_all consumes every handle");
     CHECK(pipe_write.result == 512 && pipe_read.result == 512,
           "pipelined results copied back");
     CHECK(std::memcmp(pipe_seed.data() + kPrefix, pipe_dst.data(), 512) == 0,
@@ -426,6 +438,41 @@ int main() {
     CHECK(mixed[0].result == static_cast<ssize_t>(good.size()),
           "valid request completes beside bad fd");
     CHECK(mixed[1].result == -EBADF, "bad fd result=%zd", mixed[1].result);
+
+    /* wait_all must consume every supplied handle even when an earlier
+     * handle returns an engine/request error. */
+    phxfs_io_req_t bad_batch_req = {};
+    bad_batch_req.fd = -1;
+    bad_batch_req.device_id = -1;
+    bad_batch_req.buf = bad.data();
+    bad_batch_req.nbytes = bad.size();
+    bad_batch_req.f_offset = 0;
+    phxfs_io_req_t good_batch_req = {};
+    good_batch_req.fd = fd;
+    good_batch_req.device_id = -1;
+    good_batch_req.buf = good.data();
+    good_batch_req.nbytes = good.size();
+    good_batch_req.f_offset = 0;
+    phxfs_batch_t *bad_handle = phxfs_batch_submit_read(&bad_batch_req, 1);
+    phxfs_batch_t *good_handle = phxfs_batch_submit_read(&good_batch_req, 1);
+    phxfs_batch_t *mixed_handles[] = {bad_handle, good_handle};
+    CHECK(bad_handle != nullptr && good_handle != nullptr,
+          "submit handles for wait_all error drain");
+    if (bad_handle && good_handle) {
+        int all_rc = phxfs_batch_wait_all(mixed_handles, 2);
+        CHECK(all_rc == 1, "wait_all returns accumulated failures=%d", all_rc);
+        CHECK(mixed_handles[0] == nullptr && mixed_handles[1] == nullptr,
+              "wait_all consumes handles after an error");
+        CHECK(bad_batch_req.result == -EBADF &&
+              good_batch_req.result == static_cast<ssize_t>(good.size()),
+              "wait_all preserves results for every handle");
+    } else {
+        if (bad_handle)
+            phxfs_batch_destroy(bad_handle);
+        if (good_handle)
+            phxfs_batch_destroy(good_handle);
+        CHECK(false, "wait_all error-drain submissions succeeded");
+    }
 
     /* A GPU device_id without an opened device must fail, not fall back. */
     phxfs_io_req_t gpu = {};

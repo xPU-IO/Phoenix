@@ -152,17 +152,20 @@ Submits all `n` requests, blocks until every one completes, and fills each `reqs
 phxfs_batch_t *phxfs_batch_submit_read (phxfs_io_req_t *reqs, int n);
 phxfs_batch_t *phxfs_batch_submit_write(phxfs_io_req_t *reqs, int n);
 int            phxfs_batch_wait(phxfs_batch_t *handle);
+int            phxfs_batch_wait_all(phxfs_batch_t **handles, int n);
 int            phxfs_batch_destroy(phxfs_batch_t *handle);
 ```
 
 `submit` queues the batch on the internal worker pool and returns an opaque handle immediately; the caller can run GPU compute meanwhile, then `phxfs_batch_wait` blocks for completion, fills results, and frees the handle. `wait` returns the same value convention as the synchronous batch. `phxfs_batch_destroy` abandons a batch whose results are not needed: it waits for in-flight I/O to quiesce, then frees the handle without copying results back.
+
+`phxfs_batch_wait_all` waits for and consumes every non-NULL handle in the supplied array. Each consumed array entry is set to `NULL`; the return value is the accumulated failed-request count, or the first negative error after all handles have been consumed. This is useful for draining several pipelined submissions before deregistering a FULL-mode GPU buffer.
 
 Submitted batches queue up on a bounded FIFO and run one at a time with the pool's full worker set, so several submits can be pipelined ahead (e.g. layerwise prefetch); if the queue is full, submit fails with `NULL` + `errno == EBUSY`. An empty batch (`n <= 0`) returns a valid handle whose `wait` returns `0`, matching the synchronous API.
 
 
 ### Lifetime & concurrency contract
 
-Everything a request references must stay valid until the call (sync) or `phxfs_batch_wait` (async) returns:
+Everything a request references must stay valid until the call (sync) or `phxfs_batch_wait`/`phxfs_batch_wait_all` (async) returns:
 
 - `reqs[i].fd` must remain open — fds are **not** `dup()`'d internally.
 - CPU buffers must not be freed.
